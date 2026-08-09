@@ -1,11 +1,12 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import sharp from "sharp";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const FIELDS = ["platform", "platform_mode", "test_id", "carrier", "payload_size", "source_width", "source_height", "received_width", "received_height", "source_file_size", "received_file_size", "source_format", "received_format", "decode_success", "exact_match", "pilot_confidence", "decode_time", "error"];
+const FIELDS = ["platform", "platform_mode", "test_id", "carrier", "payload_size", "source_width", "source_height", "received_width", "received_height", "source_file_size", "received_file_size", "source_format", "received_format", "received_sha256", "recovered_test_id", "evidence_status", "decode_success", "exact_match", "pilot_confidence", "decode_time", "error"];
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -40,7 +41,12 @@ async function main() {
   const verification = JSON.parse(verificationProcess.stdout);
   const receivedMetadata = await sharp(options.image).metadata();
   const receivedStats = await stat(options.image);
+  const receivedSha256 = createHash("sha256").update(await readFile(options.image)).digest("hex");
   const exact = verification.status === "PASS" && verification.recovered_test_id === test.test_id;
+  const jsonPath = join(ROOT, "benchmarks/results/real-world-platform-results.json");
+  const csvPath = join(ROOT, "benchmarks/results/real-world-platform-results.csv");
+  const report = JSON.parse(await readFile(jsonPath, "utf8"));
+  const reusedExactArtifact = report.observations.some((entry) => entry.received_sha256 === receivedSha256 && entry.exact_match === true && entry.test_id !== test.test_id);
   const row = {
     platform: options.platform,
     platform_mode: options.platformMode,
@@ -55,15 +61,15 @@ async function main() {
     received_file_size: receivedStats.size,
     source_format: test.encoded_format,
     received_format: receivedMetadata.format ?? null,
+    received_sha256: receivedSha256,
+    recovered_test_id: verification.recovered_test_id ?? null,
+    evidence_status: exact ? (reusedExactArtifact ? "reused-artifact" : "confirmed") : "mismatched-or-unrecoverable",
     decode_success: verification.detected_format === "robust-v2",
     exact_match: exact,
     pilot_confidence: verification.pilot_confidence,
     decode_time: verification.decode_duration_ms,
-    error: exact ? null : verification.error ?? verification.status,
+    error: exact ? null : verification.error ?? (verification.recovered_test_id ? `recovered ${verification.recovered_test_id}; expected ${test.test_id}` : verification.status),
   };
-  const jsonPath = join(ROOT, "benchmarks/results/real-world-platform-results.json");
-  const csvPath = join(ROOT, "benchmarks/results/real-world-platform-results.csv");
-  const report = JSON.parse(await readFile(jsonPath, "utf8"));
   const duplicate = report.observations.findIndex((entry) => entry.platform === row.platform && entry.platform_mode === row.platform_mode && entry.test_id === row.test_id);
   if (duplicate >= 0) report.observations[duplicate] = row;
   else report.observations.push(row);

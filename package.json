@@ -22,6 +22,7 @@
     "benchmark:real-world:generate": "node benchmarks/real-world/generate-kit.mjs",
     "benchmark:real-world:local": "node benchmarks/real-world/run-local-validation.mjs",
     "benchmark:real-world:performance": "node benchmarks/real-world/profile-performance.mjs",
+    "benchmark:final-performance": "node benchmarks/final-candidate-performance.mjs",
     "soak:nostr-public": "node benchmarks/nostr-public-relay-soak.mjs --duration-minutes=20"
   },
   "dependencies": {
