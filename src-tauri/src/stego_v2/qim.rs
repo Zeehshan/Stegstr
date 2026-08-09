@@ -95,6 +95,7 @@ pub(crate) fn embed_bits(
     height: u32,
     profile: RobustnessProfile,
     bits: &[u8],
+    strong_prefix_bits: usize,
 ) -> Result<(), String> {
     let blocks_x = (width / 8) as usize;
     let blocks_y = (height / 8) as usize;
@@ -111,7 +112,9 @@ pub(crate) fn embed_bits(
     let mut assignments = vec![[-1i8; PAIRS_PER_BLOCK]; block_count];
     for (logical, bit) in bits.iter().enumerate() {
         let physical = physical_slot(logical, total_slots, offset, stride);
-        assignments[physical / PAIRS_PER_BLOCK][physical % PAIRS_PER_BLOCK] = (*bit & 1) as i8;
+        let strength_marker = if logical < strong_prefix_bits { 2 } else { 0 };
+        assignments[physical / PAIRS_PER_BLOCK][physical % PAIRS_PER_BLOCK] =
+            ((*bit & 1) as i8) + strength_marker;
     }
 
     for (block_index, assignment) in assignments.iter().enumerate() {
@@ -129,8 +132,11 @@ pub(crate) fn embed_bits(
             let left_index = left.0 * 8 + left.1;
             let right_index = right.0 * 8 + right.1;
             let difference = coefficients[left_index] - coefficients[right_index];
-            let target = if *bit == 1 { delta } else { -delta };
-            if (*bit == 1 && difference < target) || (*bit == 0 && difference > target) {
+            let strong = *bit >= 2;
+            let value = *bit & 1;
+            let pair_delta = if strong { delta } else { delta * 0.8 };
+            let target = if value == 1 { pair_delta } else { -pair_delta };
+            if (value == 1 && difference < target) || (value == 0 && difference > target) {
                 let adjustment = (target - difference) * 0.5;
                 coefficients[left_index] += adjustment;
                 coefficients[right_index] -= adjustment;

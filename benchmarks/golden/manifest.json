@@ -26,6 +26,12 @@
       "file": "typescript-qim.jpg",
       "sha256": "e834f759c8148ea100d7126ab3797040d537de0d7a7beeecd7db30d58b8cf693",
       "compatibility_group": "typescript-qim-v1"
+    },
+    {
+      "algorithm": "robust-v2",
+      "file": "robust-v2.jpg",
+      "sha256": "ebe5b7721e516cf0876c01d8bdfef64111c553bfc03a01a23d1f5c425b166551",
+      "compatibility_group": "rust-robust-v2"
     }
   ],
   "cross_compatibility": {
@@ -34,6 +40,7 @@
     "rust-dwt_to_typescript-qim": "incompatible",
     "rust-dot_to_typescript-dot": "incompatible-repetition-layout",
     "rust-dot_to_typescript-qim": "incompatible",
-    "typescript-dot_to_typescript-qim": "incompatible"
+    "typescript-dot_to_typescript-qim": "incompatible",
+    "all-v1_to_robust-v2": "incompatible-versioned-format"
   }
 }

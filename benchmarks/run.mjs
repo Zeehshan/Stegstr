@@ -21,7 +21,8 @@ const BRIDGE = join(
 );
 
 const PAYLOAD_SIZES = [32, 128, 512, 1024, 5 * 1024, 10 * 1024];
-const ALL_ALGORITHMS = ["rust-dwt", "rust-dot", "typescript-dot", "typescript-qim"];
+const ALL_ALGORITHMS = ["rust-dwt", "rust-dot", "typescript-dot", "typescript-qim", "robust-v2"];
+const DEFAULT_ALGORITHMS = ALL_ALGORITHMS.filter((algorithm) => algorithm !== "robust-v2");
 const QIM_PIXEL_SAFETY_LIMIT = 2048 * 2048;
 
 const CARRIERS = [
@@ -48,7 +49,7 @@ const TRANSFORMS = [
 
 function parseArgs() {
   const args = process.argv.slice(2);
-  const result = { quick: false, algorithms: ALL_ALGORITHMS };
+  const result = { quick: false, algorithms: DEFAULT_ALGORITHMS };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--quick") result.quick = true;
     else if (args[i] === "--algorithms") {
@@ -305,7 +306,7 @@ function runBridge(args) {
 }
 
 async function encode(algorithm, carrier, payload, outputPath, ts) {
-  if (algorithm === "rust-dwt" || algorithm === "rust-dot") {
+  if (algorithm === "rust-dwt" || algorithm === "rust-dot" || algorithm === "robust-v2") {
     const payloadPath = join(WORK, "payload.bin");
     await writeFile(payloadPath, payload);
     runBridge(["encode", algorithm, carrier.path, payloadPath, outputPath]);
@@ -327,7 +328,7 @@ async function encode(algorithm, carrier, payload, outputPath, ts) {
 }
 
 async function decode(algorithm, encoded, inputPath, ts) {
-  if (algorithm === "rust-dwt" || algorithm === "rust-dot") {
+  if (algorithm === "rust-dwt" || algorithm === "rust-dot" || algorithm === "robust-v2") {
     const decodedPath = join(WORK, "decoded.bin");
     const metadata = await sharp(encoded).metadata();
     const extension = metadata.format === "jpeg" ? "jpg" : metadata.format ?? "png";
@@ -515,8 +516,10 @@ async function writeReports(observations, options) {
     summary_by_transformation_family: aggregate(observations, "transformation_family"),
     observations,
   };
-  const jsonPath = join(REPORT_DIR, "current-baseline.json");
-  const csvPath = join(REPORT_DIR, "current-baseline.csv");
+  const includesV2 = options.algorithms.includes("robust-v2");
+  const stem = includesV2 ? "robust-v2-results" : "current-baseline";
+  const jsonPath = join(REPORT_DIR, `${stem}.json`);
+  const csvPath = join(REPORT_DIR, `${stem}.csv`);
   await writeFile(jsonPath, `${JSON.stringify(report, null, 2)}\n`);
   const headers = Object.keys(observations[0] ?? baseRow("", CARRIERS[0], 0, TRANSFORMS[0]));
   const csv = [headers.join(","), ...observations.map((row) => headers.map((header) => csvValue(row[header])).join(","))].join("\n");

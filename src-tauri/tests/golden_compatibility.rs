@@ -51,3 +51,17 @@ fn typescript_dot_vector_is_not_rust_dot_compatible() {
     );
     assert!(stegstr_lib::stego_dot::decode(&golden("typescript-dot.png")).is_err());
 }
+
+#[test]
+fn robust_v2_golden_vector_decodes_exactly() {
+    assert_hash(
+        "robust-v2.jpg",
+        "ebe5b7721e516cf0876c01d8bdfef64111c553bfc03a01a23d1f5c425b166551",
+    );
+    let decoded = stegstr_lib::stego_v2::decode(&golden("robust-v2.jpg")).unwrap();
+    assert_eq!(decoded.payload, PAYLOAD);
+    assert_eq!(
+        decoded.profile,
+        stegstr_lib::stego_v2::RobustnessProfile::Robust
+    );
+}

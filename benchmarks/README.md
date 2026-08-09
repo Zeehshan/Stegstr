@@ -16,6 +16,14 @@ Optional filters are accepted:
 node benchmarks/run.mjs --algorithms rust-dwt,typescript-qim --quick
 ```
 
+Run the robust-v2 matrix without changing the frozen baseline files:
+
+```sh
+node benchmarks/run.mjs --algorithms robust-v2
+```
+
+This writes `robust-v2-results.json` and `robust-v2-results.csv`.
+
 The default matrix includes every carrier and payload at identity, plus the
 complete transformation matrix for representative 32-byte, 512-byte, and
 1-KiB scenarios. All requested payload sizes, including 5 KiB and 10 KiB, are

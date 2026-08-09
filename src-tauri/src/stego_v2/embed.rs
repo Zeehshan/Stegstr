@@ -83,6 +83,7 @@ pub fn encode(
         canonical_height,
         profile,
         &stream,
+        PILOT_BITS * PILOT_REPEAT + frame::HEADER_LEN * 8 * profile.config().header_repeat,
     )?;
     let modified_canonical = image_ops::apply_luminance(&canonical, &original_y, &modified_y);
     let output = image_ops::merge_canonical_difference(&original, &canonical, &modified_canonical);
