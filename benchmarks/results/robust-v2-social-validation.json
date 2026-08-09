@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generated_at": "2026-08-09T11:03:51.639Z",
-  "git_commit": "44f911fad9c7d5314a1e8ef9c785235e3c150f3b",
+  "git_commit": "0b1cc474c7674e82d018aeaaee682c05c283301e",
   "rust_profile": "release",
   "transformations": [
     {
