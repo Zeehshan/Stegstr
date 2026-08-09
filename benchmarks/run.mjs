@@ -12,13 +12,7 @@ import { createServer } from "vite";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const WORK = join(ROOT, "benchmarks", "work");
 const REPORT_DIR = join(ROOT, "benchmarks", "results");
-const BRIDGE = join(
-  ROOT,
-  "src-tauri",
-  "target",
-  "debug",
-  process.platform === "win32" ? "stegstr_benchmark_bridge.exe" : "stegstr_benchmark_bridge",
-);
+let BRIDGE;
 
 const PAYLOAD_SIZES = [32, 128, 512, 1024, 5 * 1024, 10 * 1024];
 const ALL_ALGORITHMS = ["rust-dwt", "rust-dot", "typescript-dot", "typescript-qim", "robust-v2"];
@@ -49,9 +43,11 @@ const TRANSFORMS = [
 
 function parseArgs() {
   const args = process.argv.slice(2);
-  const result = { quick: false, algorithms: DEFAULT_ALGORITHMS };
+  const result = { quick: false, release: false, algorithms: DEFAULT_ALGORITHMS, reportStem: null };
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--quick") result.quick = true;
+    else if (args[i] === "--release") result.release = true;
+    else if (args[i] === "--report-stem") result.reportStem = args[++i] ?? null;
     else if (args[i] === "--algorithms") {
       result.algorithms = (args[++i] ?? "").split(",").filter(Boolean);
     } else throw new Error(`unknown argument: ${args[i]}`);
@@ -503,12 +499,13 @@ async function writeReports(observations, options) {
     git_commit: execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim(),
     node_version: process.version,
     profile: options.quick ? "quick" : "baseline",
+    rust_profile: options.release ? "release" : "debug",
     algorithms: options.algorithms,
     payload_sizes_bytes: PAYLOAD_SIZES,
     carriers: CARRIERS.map(({ path: _path, ...carrier }) => carrier),
     transformations: TRANSFORMS,
     notes: [
-      "Results describe the current implementations; no robust-v2 changes are present.",
+      "Results describe the implementation at the recorded git commit and working tree.",
       "executed=false identifies the documented TypeScript QIM high-resolution memory safety guard.",
       "PSNR null with zero average difference means mathematically infinite PSNR.",
     ],
@@ -517,7 +514,7 @@ async function writeReports(observations, options) {
     observations,
   };
   const includesV2 = options.algorithms.includes("robust-v2");
-  const stem = includesV2 ? "robust-v2-results" : "current-baseline";
+  const stem = options.reportStem ?? (includesV2 ? "robust-v2-results" : "current-baseline");
   const jsonPath = join(REPORT_DIR, `${stem}.json`);
   const csvPath = join(REPORT_DIR, `${stem}.csv`);
   await writeFile(jsonPath, `${JSON.stringify(report, null, 2)}\n`);
@@ -532,11 +529,15 @@ async function writeReports(observations, options) {
 
 async function main() {
   const options = parseArgs();
+  const rustProfile = options.release ? "release" : "debug";
+  BRIDGE = join(ROOT, "src-tauri", "target", rustProfile, process.platform === "win32" ? "stegstr_benchmark_bridge.exe" : "stegstr_benchmark_bridge");
   await rm(WORK, { recursive: true, force: true });
   await mkdir(WORK, { recursive: true });
-  if (options.algorithms.some((algorithm) => algorithm.startsWith("rust-"))) {
+  if (options.algorithms.some((algorithm) => algorithm.startsWith("rust-") || algorithm === "robust-v2")) {
     console.log("Building Rust production bridge...");
-    execFileSync("cargo", ["build", "--quiet", "--bin", "stegstr_benchmark_bridge"], { cwd: join(ROOT, "src-tauri"), stdio: "inherit" });
+    const cargoArgs = ["build", "--quiet", "--bin", "stegstr_benchmark_bridge"];
+    if (options.release) cargoArgs.splice(1, 0, "--release");
+    execFileSync("cargo", cargoArgs, { cwd: join(ROOT, "src-tauri"), stdio: "inherit" });
     if (!existsSync(BRIDGE)) throw new Error(`bridge was not built: ${BRIDGE}`);
   }
   console.log("Preparing deterministic carrier corpus...");

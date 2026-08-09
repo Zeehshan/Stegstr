@@ -9,7 +9,7 @@ use std::fs;
 use std::path::Path;
 
 fn usage() -> &'static str {
-    "usage: stegstr-benchmark-bridge <encode|decode> <rust-dwt|rust-dot|robust-v2> <input> <payload-or-output> [output]"
+    "usage: stegstr-benchmark-bridge <encode|decode> <rust-dwt|rust-dot|robust-v2> <input> <payload-or-output> [output]\n       stegstr-benchmark-bridge suitability <input>"
 }
 
 fn main() {
@@ -21,6 +21,14 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = env::args().collect();
+    if args.len() == 3 && args[1] == "suitability" {
+        let report = stegstr_lib::stego_v2::assess_carrier(Path::new(&args[2]))?;
+        println!(
+            "{}",
+            serde_json::to_string(&report).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
     if args.len() < 5 {
         return Err(usage().to_string());
     }

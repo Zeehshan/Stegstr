@@ -22,6 +22,18 @@ Run the robust-v2 matrix without changing the frozen baseline files:
 node benchmarks/run.mjs --algorithms robust-v2
 ```
 
+Release-mode and named report output are also supported:
+
+```sh
+node benchmarks/run.mjs --algorithms robust-v2 --release \
+  --report-stem robust-v2-tuned-results
+```
+
+The manual social-platform kit, recorder, and local 32/128-byte validation
+matrix are documented in `benchmarks/real-world/README.md`. Platform result
+files are empty until actual returned media is measured; empty does not mean a
+zero-percent result.
+
 This writes `robust-v2-results.json` and `robust-v2-results.csv`.
 
 The default matrix includes every carrier and payload at identity, plus the

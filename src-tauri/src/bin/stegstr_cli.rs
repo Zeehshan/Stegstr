@@ -3,12 +3,13 @@
 
 use base64::Engine;
 use secp256k1::Secp256k1;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const STEGSTR_SUFFIX: &str = " Sent by Stegstr.";
 const MAX_NOTE_LENGTH: usize = 5000;
@@ -19,6 +20,7 @@ fn usage() -> &'static str {
 Usage:
   stegstr-cli decode <image> [--decrypt]          Extract robust-v2 or legacy payload
   stegstr-cli detect <image>                      Detect robust-v2 first, then legacy
+  stegstr-cli verify-channel <image> --manifest <manifest.json> [--json]
   stegstr-cli embed <cover> -o <out> --payload <string|@file> [--mode legacy|robust-v2] [--robustness standard|robust|maximum] [--encrypt] [--payload-base64]
   stegstr-cli post "content" [--privkey-hex HEX] [--output bundle.json]  Create kind 1 note, output bundle JSON
 
@@ -28,6 +30,10 @@ Decode:
 
 Detect:
   Decodes image and decrypts; prints Nostr bundle JSON { "version": 1, "events": [...] }.
+
+Verify-channel:
+  Safely matches a recovered robust-v2 payload hash to a deterministic channel
+  test manifest. It never prints payload contents. Non-PASS results exit 2.
 
 Embed:
   --payload <string>     Payload as UTF-8 string (bundle JSON for full feed)
@@ -80,6 +86,17 @@ fn main() {
         }
         return;
     }
+    if sub == "verify-channel" {
+        match run_verify_channel(&args[2..]) {
+            Ok(true) => {}
+            Ok(false) => std::process::exit(2),
+            Err(e) => {
+                eprintln!("verify-channel error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if sub == "post" {
         if let Err(e) = run_post(&args[2..]) {
             eprintln!("post error: {}", e);
@@ -89,6 +106,163 @@ fn main() {
     }
     eprintln!("{}", usage());
     std::process::exit(1);
+}
+
+#[derive(Deserialize)]
+struct ChannelManifest {
+    tests: Vec<ChannelManifestEntry>,
+}
+
+#[derive(Deserialize)]
+struct ChannelManifestEntry {
+    test_id: String,
+    payload_sha256: String,
+}
+
+#[derive(Serialize)]
+struct ChannelVerification {
+    status: String,
+    detected_format: String,
+    recovered_test_id: Option<String>,
+    payload_hash_match: bool,
+    pilot_confidence: f32,
+    synchronization_candidate: Option<String>,
+    decode_duration_ms: f64,
+    image_width: u32,
+    image_height: u32,
+    image_format: String,
+    error: Option<String>,
+}
+
+fn run_verify_channel(args: &[String]) -> Result<bool, String> {
+    let mut image_path: Option<&str> = None;
+    let mut manifest_path: Option<&str> = None;
+    let mut json = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--manifest" => {
+                i += 1;
+                manifest_path = Some(args.get(i).ok_or("missing value for --manifest")?);
+            }
+            "--json" => json = true,
+            value if !value.starts_with('-') && image_path.is_none() => image_path = Some(value),
+            value => return Err(format!("unknown verify-channel argument: {value}")),
+        }
+        i += 1;
+    }
+    let image_path = Path::new(image_path.ok_or("verify-channel requires <image>")?);
+    let manifest_path =
+        manifest_path.ok_or("verify-channel requires --manifest <manifest.json>")?;
+    let manifest: ChannelManifest = serde_json::from_slice(
+        &fs::read(manifest_path).map_err(|e| format!("read manifest: {e}"))?,
+    )
+    .map_err(|e| format!("parse manifest: {e}"))?;
+
+    let reader = image::ImageReader::open(image_path)
+        .map_err(|e| e.to_string())?
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    let image_format = reader
+        .format()
+        .map(|format| format!("{format:?}").to_ascii_lowercase())
+        .unwrap_or_else(|| "unknown".to_string());
+    let (image_width, image_height) = reader.into_dimensions().map_err(|e| e.to_string())?;
+
+    let started = Instant::now();
+    let verification = match stegstr_lib::stego_v2::decode_diagnostic(image_path) {
+        Ok(decoded) => {
+            let hash = hex::encode(Sha256::digest(&decoded.payload));
+            let entry = manifest
+                .tests
+                .iter()
+                .find(|entry| entry.payload_sha256.eq_ignore_ascii_case(&hash));
+            ChannelVerification {
+                status: if entry.is_some() { "PASS" } else { "FAIL" }.to_string(),
+                detected_format: "robust-v2".to_string(),
+                recovered_test_id: entry.map(|entry| entry.test_id.clone()),
+                payload_hash_match: entry.is_some(),
+                pilot_confidence: decoded.sync_confidence,
+                synchronization_candidate: Some(format!(
+                    "{}x{} phase {},{}",
+                    decoded.sync_candidate.canonical_width,
+                    decoded.sync_candidate.canonical_height,
+                    decoded.sync_candidate.offset_x,
+                    decoded.sync_candidate.offset_y
+                )),
+                decode_duration_ms: started.elapsed().as_secs_f64() * 1000.0,
+                image_width,
+                image_height,
+                image_format,
+                error: entry
+                    .is_none()
+                    .then(|| "recovered payload hash is absent from manifest".to_string()),
+            }
+        }
+        Err(diagnostics) => {
+            let legacy = stegstr_lib::stego::decode(image_path).is_ok();
+            let status = if legacy {
+                "FAIL"
+            } else if diagnostics.synchronization_reached {
+                "CORRUPTED / UNRECOVERABLE"
+            } else {
+                "NO STEGSTR PAYLOAD"
+            };
+            ChannelVerification {
+                status: status.to_string(),
+                detected_format: if legacy { "legacy" } else { "none" }.to_string(),
+                recovered_test_id: None,
+                payload_hash_match: false,
+                pilot_confidence: diagnostics.best_pilot_confidence,
+                synchronization_candidate: diagnostics.best_candidate.map(|candidate| {
+                    format!(
+                        "{}x{} phase {},{}",
+                        candidate.canonical_width,
+                        candidate.canonical_height,
+                        candidate.offset_x,
+                        candidate.offset_y
+                    )
+                }),
+                decode_duration_ms: started.elapsed().as_secs_f64() * 1000.0,
+                image_width,
+                image_height,
+                image_format,
+                error: diagnostics.last_error,
+            }
+        }
+    };
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&verification).map_err(|e| e.to_string())?
+        );
+    } else {
+        println!("{}", verification.status);
+        println!("detected format: {}", verification.detected_format);
+        println!(
+            "recovered test ID: {}",
+            verification.recovered_test_id.as_deref().unwrap_or("none")
+        );
+        println!("payload hash match: {}", verification.payload_hash_match);
+        println!("pilot confidence: {:.5}", verification.pilot_confidence);
+        println!(
+            "synchronization candidate: {}",
+            verification
+                .synchronization_candidate
+                .as_deref()
+                .unwrap_or("none")
+        );
+        println!("decode duration: {:.2} ms", verification.decode_duration_ms);
+        println!(
+            "image: {}x{} {}",
+            verification.image_width, verification.image_height, verification.image_format
+        );
+        if let Some(error) = &verification.error {
+            println!("error: {error}");
+        }
+    }
+    Ok(verification.status == "PASS")
 }
 
 fn run_decode(args: &[String]) -> Result<(), String> {

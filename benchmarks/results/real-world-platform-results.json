@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "updated_at": null,
+  "measurement_policy": "Only actual platform-returned files are recorded; empty means not measured.",
+  "observations": []
+}

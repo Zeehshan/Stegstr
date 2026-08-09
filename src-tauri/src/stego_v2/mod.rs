@@ -7,12 +7,14 @@ mod frame;
 mod image_ops;
 mod profile;
 mod qim;
+mod suitability;
 
 pub use capacity::CapacityReport;
 pub use profile::RobustnessProfile;
 
-pub use decode::{decode, DecodeResult};
+pub use decode::{decode, decode_diagnostic, DecodeDiagnostics, DecodeResult, SyncCandidate};
 pub use embed::encode;
+pub use suitability::{assess_carrier, CarrierSuitability, SuitabilityRating};
 
 pub(crate) const PAIRS_PER_BLOCK: usize = 6;
 pub(crate) const PILOT_BITS: usize = 64;

@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-09T10:59:50.722Z",
+  "measurement": "wall-clock production bridge process, three repeats",
+  "profiles": [
+    {
+      "rust_profile": "debug",
+      "carrier": "normal-photo",
+      "width": 1280,
+      "height": 720,
+      "payload_size_bytes": 128,
+      "repeats": 3,
+      "encode": {
+        "average_ms": 2032.9091389999996,
+        "median_ms": 2031.439375,
+        "minimum_ms": 2030.771666999999,
+        "maximum_ms": 2036.5163750000002
+      },
+      "decode": {
+        "average_ms": 940.0798333333327,
+        "median_ms": 941.9987499999988,
+        "minimum_ms": 935.3073339999992,
+        "maximum_ms": 942.9334159999999
+      },
+      "total_average_ms": 2972.988972333332
+    },
+    {
+      "rust_profile": "debug",
+      "carrier": "detailed-photo",
+      "width": 1920,
+      "height": 1080,
+      "payload_size_bytes": 128,
+      "repeats": 3,
+      "encode": {
+        "average_ms": 3720.6722503333353,
+        "median_ms": 3730.982084000003,
+        "minimum_ms": 3699.6119580000013,
+        "maximum_ms": 3731.422709000002
+      },
+      "decode": {
+        "average_ms": 1614.185458,
+        "median_ms": 1613.901582999999,
+        "minimum_ms": 1606.904125000001,
+        "maximum_ms": 1621.750666
+      },
+      "total_average_ms": 5334.857708333335
+    },
+    {
+      "rust_profile": "release",
+      "carrier": "normal-photo",
+      "width": 1280,
+      "height": 720,
+      "payload_size_bytes": 128,
+      "repeats": 3,
+      "encode": {
+        "average_ms": 58.60152733333234,
+        "median_ms": 58.00554099999863,
+        "minimum_ms": 57.47504099999787,
+        "maximum_ms": 60.324000000000524
+      },
+      "decode": {
+        "average_ms": 29.84905566666809,
+        "median_ms": 28.59687500000291,
+        "minimum_ms": 28.337666999999783,
+        "maximum_ms": 32.61262500000157
+      },
+      "total_average_ms": 88.45058300000044
+    },
+    {
+      "rust_profile": "release",
+      "carrier": "detailed-photo",
+      "width": 1920,
+      "height": 1080,
+      "payload_size_bytes": 128,
+      "repeats": 3,
+      "encode": {
+        "average_ms": 115.0031806666666,
+        "median_ms": 114.27858299999934,
+        "minimum_ms": 113.6374169999981,
+        "maximum_ms": 117.09354200000234
+      },
+      "decode": {
+        "average_ms": 43.92118066666444,
+        "median_ms": 43.978416999998444,
+        "minimum_ms": 43.75004099999933,
+        "maximum_ms": 44.03508399999555
+      },
+      "total_average_ms": 158.92436133333103
+    }
+  ]
+}

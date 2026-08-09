@@ -64,7 +64,13 @@ pub(crate) fn decode_packets(
             shards.push(None);
         }
     }
-    if shards.iter().filter(|shard| shard.is_some()).count() < data_shards {
+    let valid_shards = shards.iter().filter(|shard| shard.is_some()).count();
+    if std::env::var_os("STEGSTR_BENCH_DIAGNOSTICS").is_some() {
+        eprintln!(
+            "robust-v2 diagnostic stage=fec valid_shards={valid_shards} required_shards={data_shards} total_shards={total_shards} shard_size={shard_size}"
+        );
+    }
+    if valid_shards < data_shards {
         return Err("robust-v2 has too many missing or corrupt FEC shards".to_string());
     }
     let rs = ReedSolomon::new(data_shards, parity_shards).map_err(|e| e.to_string())?;

@@ -18,7 +18,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "node tests/e2e/run-permutations.mjs",
-    "benchmark:stego": "node benchmarks/run.mjs"
+    "benchmark:stego": "node benchmarks/run.mjs",
+    "benchmark:real-world:generate": "node benchmarks/real-world/generate-kit.mjs",
+    "benchmark:real-world:local": "node benchmarks/real-world/run-local-validation.mjs",
+    "benchmark:real-world:performance": "node benchmarks/real-world/profile-performance.mjs"
   },
   "dependencies": {
     "@noble/hashes": "^2.0.1",

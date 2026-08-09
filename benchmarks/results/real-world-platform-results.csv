@@ -1,0 +1,1 @@
+platform,platform_mode,test_id,carrier,payload_size,source_width,source_height,received_width,received_height,source_file_size,received_file_size,source_format,received_format,decode_success,exact_match,pilot_confidence,decode_time,error
