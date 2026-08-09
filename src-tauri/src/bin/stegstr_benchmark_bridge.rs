@@ -9,7 +9,7 @@ use std::fs;
 use std::path::Path;
 
 fn usage() -> &'static str {
-    "usage: stegstr-benchmark-bridge <encode|decode> <rust-dwt|rust-dot> <input> <payload-or-output> [output]"
+    "usage: stegstr-benchmark-bridge <encode|decode> <rust-dwt|rust-dot|robust-v2> <input> <payload-or-output> [output]"
 }
 
 fn main() {
@@ -37,6 +37,11 @@ fn run() -> Result<(), String> {
             let encoded = match algorithm {
                 "rust-dwt" => stegstr_lib::stego::encode(input, &payload),
                 "rust-dot" => stegstr_lib::stego_dot::encode(input, &payload),
+                "robust-v2" => stegstr_lib::stego_v2::encode(
+                    input,
+                    &payload,
+                    stegstr_lib::stego_v2::RobustnessProfile::Robust,
+                ),
                 _ => Err(format!("unknown algorithm: {algorithm}")),
             }?;
             fs::write(&args[5], encoded).map_err(|e| e.to_string())?;
@@ -48,6 +53,7 @@ fn run() -> Result<(), String> {
             let decoded = match algorithm {
                 "rust-dwt" => stegstr_lib::stego::decode(input),
                 "rust-dot" => stegstr_lib::stego_dot::decode(input),
+                "robust-v2" => stegstr_lib::stego_v2::decode(input).map(|result| result.payload),
                 _ => Err(format!("unknown algorithm: {algorithm}")),
             }?;
             fs::write(&args[4], decoded).map_err(|e| e.to_string())?;

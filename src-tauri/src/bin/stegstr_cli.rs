@@ -17,9 +17,9 @@ fn usage() -> &'static str {
     r#"stegstr-cli — Stegstr command-line interface
 
 Usage:
-  stegstr-cli decode <image.png> [--decrypt]     Extract payload (optionally decrypt app-layer)
-  stegstr-cli detect <image.png>                 Decode + decrypt, print bundle JSON (same as decode --decrypt)
-  stegstr-cli embed <cover.png> -o <out.png> --payload <string|@file> [--encrypt] [--payload-base64]
+  stegstr-cli decode <image> [--decrypt]          Extract robust-v2 or legacy payload
+  stegstr-cli detect <image>                      Detect robust-v2 first, then legacy
+  stegstr-cli embed <cover> -o <out> --payload <string|@file> [--mode legacy|robust-v2] [--robustness standard|robust|maximum] [--encrypt] [--payload-base64]
   stegstr-cli post "content" [--privkey-hex HEX] [--output bundle.json]  Create kind 1 note, output bundle JSON
 
 Decode:
@@ -34,7 +34,12 @@ Embed:
   --payload @<path>      Payload from file (e.g. --payload @bundle.json)
   --payload-base64 <b64> Payload as base64 string
   --encrypt              Encrypt with app key before embedding (any Stegstr user can detect)
+  --mode robust-v2       Use the experimental Rust differential-QIM format (default remains legacy)
+  --robustness <profile> standard, robust (default), or maximum; robust-v2 only
   -o, --output <path>    Output PNG path (required for embed)
+
+Robust-v2 currently rejects --encrypt instead of compressing ciphertext in the
+wrong order. Legacy --encrypt behavior is unchanged.
 
 Post:
   Creates a kind 1 Nostr note with Stegstr suffix. Outputs bundle JSON to stdout or --output file.
@@ -101,11 +106,19 @@ fn run_decode(args: &[String]) -> Result<(), String> {
     }
     let path_str = image_path.ok_or("decode requires <image.png>")?;
     let path = Path::new(path_str);
-    let payload = stegstr_lib::stego::decode(path)?;
+    let (payload, is_v2) = match stegstr_lib::stego_v2::decode(path) {
+        Ok(result) => (result.payload, true),
+        Err(_) => (stegstr_lib::stego::decode(path)?, false),
+    };
+    if decrypt && is_v2 {
+        return Err("robust-v2 encrypted payloads are not enabled yet".to_string());
+    }
     let output = if decrypt && stegstr_lib::stego_crypto::is_encrypted_payload(&payload) {
         stegstr_lib::stego_crypto::decrypt_app(&payload)?
     } else if decrypt {
-        return Err("Payload is not Stegstr app-encrypted (use without --decrypt for raw)".to_string());
+        return Err(
+            "Payload is not Stegstr app-encrypted (use without --decrypt for raw)".to_string(),
+        );
     } else {
         match String::from_utf8(payload.clone()) {
             Ok(s) if s.trim_start().starts_with('{') => s,
@@ -115,19 +128,26 @@ fn run_decode(args: &[String]) -> Result<(), String> {
             ),
         }
     };
-    io::stdout().write_all(output.as_bytes()).map_err(|e| e.to_string())?;
+    io::stdout()
+        .write_all(output.as_bytes())
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 fn run_detect(image_path: &str) -> Result<(), String> {
     let path = Path::new(image_path);
-    let payload = stegstr_lib::stego::decode(path)?;
+    let payload = match stegstr_lib::stego_v2::decode(path) {
+        Ok(result) => result.payload,
+        Err(_) => stegstr_lib::stego::decode(path)?,
+    };
     let json = if stegstr_lib::stego_crypto::is_encrypted_payload(&payload) {
         stegstr_lib::stego_crypto::decrypt_app(&payload)?
     } else {
         String::from_utf8(payload).map_err(|e| e.to_string())?
     };
-    io::stdout().write_all(json.as_bytes()).map_err(|e| e.to_string())?;
+    io::stdout()
+        .write_all(json.as_bytes())
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -137,6 +157,8 @@ fn run_embed(args: &[String]) -> Result<(), String> {
     let mut payload_str: Option<String> = None;
     let mut payload_base64: Option<String> = None;
     let mut encrypt = false;
+    let mut mode = "legacy".to_string();
+    let mut robustness = stegstr_lib::stego_v2::RobustnessProfile::Robust;
 
     let mut i = 0;
     while i < args.len() {
@@ -155,9 +177,22 @@ fn run_embed(args: &[String]) -> Result<(), String> {
             }
         } else if a == "--payload-base64" {
             i += 1;
-            payload_base64 = Some(args.get(i).ok_or("missing value for --payload-base64")?.clone());
+            payload_base64 = Some(
+                args.get(i)
+                    .ok_or("missing value for --payload-base64")?
+                    .clone(),
+            );
         } else if a == "--encrypt" {
             encrypt = true;
+        } else if a == "--mode" {
+            i += 1;
+            mode = args.get(i).ok_or("missing value for --mode")?.clone();
+        } else if a == "--robustness" {
+            i += 1;
+            robustness = args
+                .get(i)
+                .ok_or("missing value for --robustness")?
+                .parse()?;
         } else if !a.starts_with('-') && cover.is_none() {
             cover = Some(a);
         }
@@ -174,16 +209,30 @@ fn run_embed(args: &[String]) -> Result<(), String> {
     } else if let Some(s) = payload_str {
         s.into_bytes()
     } else {
-        return Err("embed requires --payload <string|@file> or --payload-base64 <b64>".to_string());
+        return Err(
+            "embed requires --payload <string|@file> or --payload-base64 <b64>".to_string(),
+        );
     };
 
+    if encrypt && mode == "robust-v2" {
+        return Err(
+            "robust-v2 --encrypt is not enabled until compression-before-encryption is wired"
+                .to_string(),
+        );
+    }
     if encrypt {
         let plaintext = String::from_utf8(payload_bytes).map_err(|e| e.to_string())?;
         payload_bytes = stegstr_lib::stego_crypto::encrypt_app(&plaintext)?;
     }
 
-    let png_bytes = stegstr_lib::stego::encode(Path::new(cover_path), &payload_bytes)?;
-    fs::write(output_path, png_bytes).map_err(|e| e.to_string())?;
+    let output_bytes = match mode.as_str() {
+        "legacy" => stegstr_lib::stego::encode(Path::new(cover_path), &payload_bytes)?,
+        "robust-v2" => {
+            stegstr_lib::stego_v2::encode(Path::new(cover_path), &payload_bytes, robustness)?
+        }
+        _ => return Err(format!("unknown embed mode: {mode}")),
+    };
+    fs::write(output_path, output_bytes).map_err(|e| e.to_string())?;
     eprintln!("Wrote {}", output_path);
     Ok(())
 }
@@ -200,7 +249,10 @@ fn ensure_stegstr_suffix(content: &str) -> String {
 }
 
 /// Create a NIP-01 kind 1 event and return (id_hex, pubkey_hex, created_at, sig_hex) for bundle JSON.
-fn create_kind1_event(content: &str, sk: &secp256k1::SecretKey) -> Result<(String, String, u64, String), String> {
+fn create_kind1_event(
+    content: &str,
+    sk: &secp256k1::SecretKey,
+) -> Result<(String, String, u64, String), String> {
     let secp = Secp256k1::new();
     let pk = secp256k1::Keypair::from_secret_key(&secp, sk);
     let (xonly, _parity) = pk.x_only_public_key();
@@ -210,8 +262,10 @@ fn create_kind1_event(content: &str, sk: &secp256k1::SecretKey) -> Result<(Strin
         .map_err(|e| e.to_string())?
         .as_secs();
     let tags: Vec<Vec<String>> = vec![];
-    let serialized = serde_json::to_string(&serde_json::json!([0, pubkey_hex, created_at, 1, tags, content]))
-        .map_err(|e| e.to_string())?;
+    let serialized = serde_json::to_string(&serde_json::json!([
+        0, pubkey_hex, created_at, 1, tags, content
+    ]))
+    .map_err(|e| e.to_string())?;
     let id_hash = Sha256::digest(serialized.as_bytes());
     let id_hex = hex::encode(id_hash);
     let msg = secp256k1::Message::from_digest_slice(id_hash.as_ref()).map_err(|e| e.to_string())?;
@@ -230,7 +284,11 @@ fn run_post(args: &[String]) -> Result<(), String> {
         let a = &args[i];
         if a == "--privkey-hex" {
             i += 1;
-            privkey_hex = Some(args.get(i).ok_or("missing value for --privkey-hex")?.clone());
+            privkey_hex = Some(
+                args.get(i)
+                    .ok_or("missing value for --privkey-hex")?
+                    .clone(),
+            );
         } else if a == "--output" {
             i += 1;
             output_path = Some(args.get(i).ok_or("missing value for --output")?);
@@ -266,7 +324,9 @@ fn run_post(args: &[String]) -> Result<(), String> {
         fs::write(path, &json).map_err(|e| e.to_string())?;
         eprintln!("Wrote {}", path);
     } else {
-        io::stdout().write_all(json.as_bytes()).map_err(|e| e.to_string())?;
+        io::stdout()
+            .write_all(json.as_bytes())
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }

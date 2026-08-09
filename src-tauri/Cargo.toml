@@ -36,4 +36,6 @@ sha2 = "0.10"
 rand = "0.8"
 secp256k1 = { version = "0.28", features = ["rand-std"] }
 hex = "0.4"
-
+flate2 = "1.1"
+crc32fast = "1"
+reed-solomon-erasure = "6"
