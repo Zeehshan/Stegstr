@@ -65,8 +65,6 @@ export async function encodeStegoToBlob(coverFile: File, payload: string): Promi
     const payloadBytes = payloadStringToBytes(payload);
     console.log("[platform-web] encodeStegoToBlob: coverFile=", coverFile.name, "size=", coverFile.size);
     console.log("[platform-web] encodeStegoToBlob: payload string len:", payload.length, "bytes len:", payloadBytes.length);
-    console.log("[platform-web] encodeStegoToBlob: first 16 bytes:", Array.from(payloadBytes.slice(0, 16)));
-    console.log("[platform-web] encodeStegoToBlob: first 8 as string:", String.fromCharCode(...payloadBytes.slice(0, 8)));
     const blob = await encodeDotImageFile(coverFile, payloadBytes);
     console.log("[platform-web] encodeStegoToBlob: success, blob size=", blob.size);
     return blob;

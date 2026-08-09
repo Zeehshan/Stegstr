@@ -1,5 +1,6 @@
 import * as Nostr from "./nostr-stub";
 import type { IdentityEntry, ProfileData } from "./types";
+import { normalizeRelayUrl } from "./relay";
 
 export interface SettingsViewProps {
   identities: IdentityEntry[];
@@ -25,8 +26,8 @@ export function SettingsView({
 }: SettingsViewProps) {
   const handleAddRelay = () => {
     if (newRelayUrl.trim()) {
-      const url = newRelayUrl.trim().toLowerCase();
-      if (url.startsWith("wss://") || url.startsWith("ws://")) {
+      const url = normalizeRelayUrl(newRelayUrl);
+      if (url) {
         if (relayUrls.includes(url)) {
           onStatus("Relay already added.");
         } else {
@@ -35,7 +36,7 @@ export function SettingsView({
         }
         setNewRelayUrl("");
       } else {
-        onStatus("Relay URL must start with wss:// or ws://");
+        onStatus("Enter a valid ws:// or wss:// relay URL without credentials.");
       }
     }
   };

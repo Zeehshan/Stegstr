@@ -140,9 +140,7 @@ function decodeFromTile(
     for (let blockIdx = 0; blockIdx < blocksPerChannel; blockIdx++)
       bits.push((lh[blockIdx]! & 1) !== 0);
   }
-  // Debug: show first 88 bits as bytes (should be STEGSTR + 4-byte length)
-  const first11Bytes = bitsToBytes(bits.slice(0, 88));
-  console.log("[stego-web] decodeFromTile: dims=", tw, "x", th, "first 11 bytes:", Array.from(first11Bytes), "as string:", String.fromCharCode(...first11Bytes.slice(0, 7)));
+  console.log("[stego-web] decodeFromTile: dims=", tw, "x", th);
   for (let start = 0; start <= bits.length - 88; start++) {
     const slice = bits.slice(start, start + MAGIC_LEN * 8);
     const bytes = bitsToBytes(slice);
@@ -226,7 +224,7 @@ export function decodeStegoFromRGBA(
   console.log("[stego-web] decodeStegoFromRGBA: trying full image decode");
   const payload = decodeFromTile(buf, w, h, stride);
   if (payload) {
-    console.log("[stego-web] decodeStegoFromRGBA: found payload in full image, len=", payload.length, "first 20:", Array.from(payload.slice(0, 20)));
+    console.log("[stego-web] decodeStegoFromRGBA: found payload in full image, len=", payload.length);
     return payload;
   }
   
@@ -250,7 +248,7 @@ export function encodeStegoIntoRGBA(
   const stride = w * 4;
   const toEmbed = buildToEmbed(payload);
   const bitsNeeded = toEmbed.length * 8;
-  console.log("[stego-web] Embed: dims=", w, "x", h, "payload=", payload.length, "bytes, toEmbed=", toEmbed.length, "bytes, first 20:", Array.from(toEmbed.slice(0, 20)));
+  console.log("[stego-web] Embed: dims=", w, "x", h, "payload=", payload.length, "bytes, toEmbed=", toEmbed.length, "bytes");
 
   let embeddedAny = false;
   for (let ty = 0; ty < h; ty += TILE_SIZE) {
@@ -292,15 +290,10 @@ export function encodeStegoIntoRGBA(
   if (!testDecode) {
     console.error("[stego-web] CRITICAL BUG: Embed succeeded but immediate decode failed! DWT is broken.");
   } else {
-    console.log("[stego-web] Immediate decode OK, len:", testDecode.length, "first 16:", Array.from(testDecode.slice(0, 16)));
-    console.log("[stego-web] First 8 as string:", String.fromCharCode(...testDecode.slice(0, 8)));
+    console.log("[stego-web] Immediate decode OK, len:", testDecode.length);
     // Verify the payload matches what we embedded
     const payloadMatch = payload.length === testDecode.length && payload.every((b, i) => b === testDecode[i]);
     console.log("[stego-web] Payload match:", payloadMatch ? "SUCCESS" : "FAIL");
-    if (!payloadMatch && testDecode.length > 0) {
-      console.log("[stego-web] Expected first 16:", Array.from(payload.slice(0, 16)));
-      console.log("[stego-web] Got first 16:", Array.from(testDecode.slice(0, 16)));
-    }
   }
 
   return { data: raw, width: w, height: h };
@@ -359,10 +352,6 @@ export async function encodeImageFile(
   } else {
     const pngPayloadMatch = payload.length === pngStegoTest.length && payload.every((b, i) => b === pngStegoTest[i]);
     console.log("[stego-web] PNG stego test: payload match=", pngPayloadMatch ? "SUCCESS" : "FAIL");
-    if (!pngPayloadMatch) {
-      console.log("[stego-web] PNG stego: expected first 16:", Array.from(payload.slice(0, 16)));
-      console.log("[stego-web] PNG stego: got first 16:", Array.from(pngStegoTest.slice(0, 16)));
-    }
   }
 
   return new Blob([pngBytes], { type: "image/png" });
@@ -387,7 +376,7 @@ export async function testRoundTrip(): Promise<void> {
   
   // Test payload
   const testPayload = new TextEncoder().encode('{"test":"hello world from stegstr"}');
-  console.log("Test payload:", testPayload.length, "bytes:", new TextDecoder().decode(testPayload));
+  console.log("Test payload:", testPayload.length, "bytes");
   
   // Encode
   const encoded = encodeStegoIntoRGBA(testData, w, h, testPayload);
@@ -417,7 +406,7 @@ export async function testRoundTrip(): Promise<void> {
     console.error("FAIL: Could not decode stego payload!");
     return;
   }
-  console.log("Decoded stego payload:", stegoPayload.length, "bytes:", new TextDecoder().decode(stegoPayload));
+  console.log("Decoded stego payload:", stegoPayload.length, "bytes");
   
   // Compare payloads
   const match = testPayload.length === stegoPayload.length && 

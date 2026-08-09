@@ -3,7 +3,9 @@ import * as Nostr from "./nostr-stub";
 import { isWeb, pickImageFile, decodeStegoFile, encodeStegoToBlob, downloadBlob } from "./platform-web";
 import { getDotCapacityForFile } from "./stego-dot-web";
 import { getTauri } from "./platform-desktop";
-import { connectRelays, publishEvent, DEFAULT_RELAYS, getRelayUrls } from "./relay";
+import { connectRelays, DEFAULT_RELAYS, getRelayUrls, queueEventForOutbox } from "./relay";
+import { mergeNostrEvents, NOSTR_LIMITS } from "./nostr-events";
+import { browserStorage, loadCachedNostrState, saveCachedNostrState } from "./nostr-persistence";
 import { uint8ArrayToBase64 } from "./utils";
 import {
   decodeQimImageFile,
@@ -49,6 +51,8 @@ const BASE_RELAYS = "stegstr_relays";
 const BASE_ZAP_QUEUE = "stegstr_zap_queue";
 const BASE_DM_READ = "stegstr_dm_read_timestamps";
 const BASE_NOTIF_READ = "stegstr_notification_read_at";
+const BASE_NOSTR_CACHE = "stegstr_nostr_cache_v1";
+const BASE_NOSTR_OUTBOX = "stegstr_nostr_outbox_v1";
 
 /** Default follows for new local identities so the feed shows posts when network is on. */
 const DEFAULT_FOLLOW_NPUBS = [
@@ -183,6 +187,7 @@ export type { IdentityEntry } from "./types";
 
 function App({ profile }: { profile: string | null }) {
   const toast = useToast();
+  const [initialNostrState] = useState(() => loadCachedNostrState(browserStorage(), getStorageKey(BASE_NOSTR_CACHE, profile)));
   const [identities, setIdentities] = useState<IdentityEntry[]>(() => migrateToIdentities(profile));
   const [actingPubkey, setActingPubkey] = useState<string | null>(() => {
     try {
@@ -204,8 +209,8 @@ function App({ profile }: { profile: string | null }) {
   const [nsec, setNsec] = useState("");
   const [loginFormOpen, setLoginFormOpen] = useState(false);
   const [networkEnabled, setNetworkEnabled] = useState(false);
-  const [events, setEvents] = useState<NostrEvent[]>([]);
-  const [profiles, setProfiles] = useState<Record<string, ProfileData>>({});
+  const [events, setEvents] = useState<NostrEvent[]>(() => initialNostrState.events);
+  const [profiles, setProfiles] = useState<Record<string, ProfileData>>(() => initialNostrState.profiles);
   const [newPost, setNewPost] = useState("");
   const [postMediaUrls, setPostMediaUrls] = useState<string[]>([]);
   const [uploadingMedia, setUploadingMedia] = useState(false);
@@ -310,6 +315,8 @@ function App({ profile }: { profile: string | null }) {
   const loadingMoreRef = useRef(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const eventBufferRef = useRef<NostrEvent[]>([]);
+  const eventsRef = useRef(events);
+  eventsRef.current = events;
   const FLUSH_MS = 120;
 
   useEffect(() => {
@@ -317,6 +324,13 @@ function App({ profile }: { profile: string | null }) {
       localStorage.setItem(getStorageKey(BASE_RELAYS, profile), JSON.stringify(relayUrls));
     } catch (_) {}
   }, [relayUrls, profile]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      saveCachedNostrState(browserStorage(), getStorageKey(BASE_NOSTR_CACHE, profile), events, profiles);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [events, profiles, profile]);
 
   useEffect(() => {
     try {
@@ -380,7 +394,6 @@ function App({ profile }: { profile: string | null }) {
     }
     prevNetworkRef.current = networkEnabled;
   }, [networkEnabled]);
-  const prevNetworkRefLegacy = useRef(false);
   const hasSyncedAnonRef = useRef(false);
 
   // Ensure at least one identity
@@ -637,12 +650,14 @@ function App({ profile }: { profile: string | null }) {
     .sort((a, b) => b.sortAt - a.sortAt);
 
   const publishViaRelay = useCallback((ev: NostrEvent) => {
-    if (relayRef.current) {
-      relayRef.current.publish(ev);
-    } else {
-      publishEvent(ev, relayUrls);
+    try {
+      if (relayRef.current) relayRef.current.publish(ev);
+      else queueEventForOutbox(ev, relayUrls, { storageKey: getStorageKey(BASE_NOSTR_OUTBOX, profile) });
+    } catch (error) {
+      setStatus("Publish queue error: " + (error instanceof Error ? error.message : String(error)));
+      logger.logError("Nostr publish queue failed", error, { eventId: ev.id.slice(0, 16) });
     }
-  }, [relayUrls]);
+  }, [relayUrls, profile]);
 
   useEffect(() => {
     const authors = Array.from(viewingPubkeys).filter((pk) => pk && /^[a-fA-F0-9]{64}$/.test(pk));
@@ -669,22 +684,34 @@ function App({ profile }: { profile: string | null }) {
             content: typeof ev.content === "string" ? ev.content : "",
             sig: typeof ev.sig === "string" ? ev.sig : "",
           };
-          eventBufferRef.current.push(safe);
+          if (eventBufferRef.current.length < NOSTR_LIMITS.batchEvents) eventBufferRef.current.push(safe);
         } catch (_) {}
       },
-      () => setRelayStatus("Synced"),
-      (err) => setRelayStatus("Error: " + (err instanceof Error ? err.message : String(err))),
-      relayUrls
+      undefined,
+      () => { /* Individual relay failures are represented in the aggregate snapshot. */ },
+      relayUrls,
+      { storageKey: getStorageKey(BASE_NOSTR_OUTBOX, profile) },
     );
+    const unsubscribeState = relayRef.current.subscribe((snapshot) => {
+      const prefix = snapshot.syncState === "synced"
+        ? "Synced"
+        : snapshot.syncState === "partial"
+          ? "Partially synced"
+          : snapshot.syncState === "syncing"
+            ? "Connecting"
+            : "Offline";
+      const pending = snapshot.pendingPublishes > 0 ? ` · ${snapshot.pendingPublishes} pending` : "";
+      const failed = snapshot.failedPublishes > 0 ? ` · ${snapshot.failedPublishes} failed` : "";
+      setRelayStatus(`${prefix} · ${snapshot.connected}/${snapshot.configured} relays${pending}${failed}`);
+    });
     const flush = () => {
       const batch = eventBufferRef.current;
       if (batch.length === 0) return;
       eventBufferRef.current = [];
       try {
+        const mergedForProfiles = mergeNostrEvents(eventsRef.current, batch, 10_000);
         setEvents((prev) => {
-          const byId = new Map(prev.map((e) => [e.id, e]));
-          batch.forEach((e) => byId.set(e.id, e));
-          let all = Array.from(byId.values()).sort((a, b) => b.created_at - a.created_at);
+          let all = mergeNostrEvents(prev, batch, 10_000);
           const MAX_EVENTS = 10000;
           if (all.length > MAX_EVENTS) {
             const ownPks = new Set(selfPubkeys);
@@ -692,10 +719,13 @@ function App({ profile }: { profile: string | null }) {
             const rest = all.filter((e) => !ownPks.has(e.pubkey)).slice(0, MAX_EVENTS - own.length);
             all = [...own, ...rest].sort((a, b) => b.created_at - a.created_at);
           }
+          eventsRef.current = all;
           return all;
         });
         const profileUpdates: Record<string, ProfileData> = {};
         batch.filter((e) => e.kind === 0).forEach((e) => {
+          const winner = mergedForProfiles.find((candidate) => candidate.kind === 0 && candidate.pubkey === e.pubkey);
+          if (winner?.id !== e.id) return;
           try {
             const raw = JSON.parse(e.content) as { name?: string; display_name?: string; about?: string; picture?: string; banner?: string; nip05?: string };
             profileUpdates[e.pubkey] = {
@@ -730,12 +760,13 @@ function App({ profile }: { profile: string | null }) {
     const interval = setInterval(flush, FLUSH_MS);
     return () => {
       clearInterval(interval);
+      unsubscribeState();
       relayRef.current?.close();
       relayRef.current = null;
       eventBufferRef.current = [];
       setRelayStatus("");
     };
-  }, [networkEnabled, viewingPubkeysKey, relayUrlsKey]);
+  }, [networkEnabled, viewingPubkeysKey, relayUrlsKey, profile]);
 
   useEffect(() => {
     const sentinel = loadMoreSentinelRef.current;
@@ -777,7 +808,7 @@ function App({ profile }: { profile: string | null }) {
   }, [networkEnabled, rootNoteIdsKey]);
 
   useEffect(() => {
-    if (relayStatus !== "Synced" || !relayRef.current) return;
+    if (!(relayStatus.startsWith("Synced") || relayStatus.startsWith("Partially synced")) || !relayRef.current) return;
     const toFetch = new Set<string>(contacts);
     notes.forEach((n) => toFetch.add(n.pubkey));
     if (toFetch.size > 0) relayRef.current.requestProfiles([...toFetch].slice(0, 300));
@@ -808,7 +839,7 @@ function App({ profile }: { profile: string | null }) {
 
   // When relay becomes Synced and search is a pubkey, fetch that author (in case first request ran too early)
   useEffect(() => {
-    if (relayStatus !== "Synced" || !relayRef.current) return;
+    if (!(relayStatus.startsWith("Synced") || relayStatus.startsWith("Partially synced")) || !relayRef.current) return;
     const trimmed = searchQuery.trim().replace(/\s/g, "");
     let toFetch: string | null = null;
     const npubMatch = trimmed.match(/npub1[a-zA-Z0-9]+/i);
@@ -836,7 +867,7 @@ function App({ profile }: { profile: string | null }) {
   const profilesRef = useRef(profiles);
   profilesRef.current = profiles;
   useEffect(() => {
-    if (!networkEnabled || !relayRef.current || relayStatus !== "Synced") return;
+    if (!networkEnabled || !relayRef.current || !(relayStatus.startsWith("Synced") || relayStatus.startsWith("Partially synced"))) return;
     if (!actingPubkey || actingIdentity?.type !== "nostr") return;
     const haveProfile = profilesRef.current[actingPubkey]?.name || profilesRef.current[actingPubkey]?.picture || profilesRef.current[actingPubkey]?.about;
     if (haveProfile) { profileSyncRetryRef.current = 0; return; }
@@ -906,25 +937,6 @@ function App({ profile }: { profile: string | null }) {
     }, 400);
     return () => clearTimeout(t);
   }, [networkEnabled, followingSearchInput]);
-
-  useEffect(() => {
-    const justTurnedOn = networkEnabled && !prevNetworkRefLegacy.current;
-    prevNetworkRefLegacy.current = networkEnabled;
-    if (!justTurnedOn || !pubkey || !canPublishToNetwork) return;
-    setEvents((prev) => {
-      const myEvents = prev.filter((e) => e.pubkey === pubkey);
-      const BATCH = 5;
-      const DELAY_MS = 400;
-      myEvents.forEach((ev, i) => {
-        setTimeout(() => {
-          try {
-            publishViaRelay(ev);
-          } catch (_) {}
-        }, Math.floor(i / BATCH) * DELAY_MS);
-      });
-      return prev;
-    });
-  }, [networkEnabled, pubkey, relayUrls, canPublishToNetwork]);
 
   const dmCacheRef = useRef<Record<string, string>>({});
   const dmEventIds = dmEvents.map((e) => e.id).join(",");
@@ -1140,11 +1152,9 @@ function App({ profile }: { profile: string | null }) {
           addStegoLog("Decoding base64 payload...");
           const bytes = Uint8Array.from(atob(raw.slice(7)), (c) => c.charCodeAt(0));
           addStegoLog(`Decoded: ${bytes.length} bytes, prefix: ${String.fromCharCode(...bytes.slice(0, 8))}`);
-          console.log("[App] Decoded bytes len:", bytes.length, "first 16:", Array.from(bytes.slice(0, 16)));
-          console.log("[App] First 8 as string:", String.fromCharCode(...bytes.slice(0, 8)));
+          console.log("[App] Decoded encrypted payload bytes:", bytes.length);
           if (!stegoCrypto.isEncryptedPayload(bytes)) {
             addStegoLog("FAIL: Missing STEGSTR1 magic header!");
-            console.log("[App] FAIL: bytes don't start with STEGSTR1. Expected:", Array.from(new TextEncoder().encode("STEGSTR1")));
             setDecodeError("Not a Stegstr encrypted image");
             logger.logAction("detect_error", "Not a Stegstr encrypted image", { name: file.name });
             return;
@@ -1805,7 +1815,7 @@ function App({ profile }: { profile: string | null }) {
         );
         setEvents((prev) => [ev as NostrEvent, ...prev]);
         setDmReplyContent("");
-        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
+        if (canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Message sent");
         logger.logAction("dm_send", "DM sent", { to: theirPubkeyHex.slice(0, 8) + "…", networkEnabled });
       } catch (e) {
@@ -1813,7 +1823,7 @@ function App({ profile }: { profile: string | null }) {
         logger.logError("DM send failed", e, { to: theirPubkeyHex.slice(0, 8) + "…" });
       }
     },
-    [effectivePrivKey, networkEnabled, canPublishToNetwork]
+    [effectivePrivKey, networkEnabled, canPublishToNetwork, publishViaRelay]
   );
 
   const handlePost = useCallback(async () => {
@@ -1836,10 +1846,10 @@ function App({ profile }: { profile: string | null }) {
     setEvents((prev) => [ev as NostrEvent, ...prev]);
     setNewPost("");
     setPostMediaUrls([]);
-    if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
+    if (canPublishToNetwork) publishViaRelay(ev as NostrEvent);
     setStatus("Posted");
     logger.logAction("post", "Posted note", { networkEnabled, contentLength: content.length, mediaCount: postMediaUrls.length });
-  }, [effectivePrivKey, newPost, postMediaUrls, networkEnabled, canPublishToNetwork]);
+  }, [effectivePrivKey, newPost, postMediaUrls, networkEnabled, canPublishToNetwork, publishViaRelay]);
 
   const handleLike = useCallback(
     async (note: NostrEvent) => {
@@ -1859,7 +1869,7 @@ function App({ profile }: { profile: string | null }) {
           sk
         );
         setEvents((prev) => [ev as NostrEvent, ...prev]);
-        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
+        if (canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Liked");
         logger.logAction("like", "Liked note", { noteId: note.id.slice(0, 8) + "…", networkEnabled });
       } catch (e) {
@@ -1867,7 +1877,7 @@ function App({ profile }: { profile: string | null }) {
         logger.logError("Like failed", e, { noteId: note.id.slice(0, 8) + "…" });
       }
     },
-    [effectivePrivKey, networkEnabled, canPublishToNetwork]
+    [effectivePrivKey, networkEnabled, canPublishToNetwork, publishViaRelay]
   );
 
   const handleRepost = useCallback(
@@ -1888,13 +1898,13 @@ function App({ profile }: { profile: string | null }) {
           sk
         );
         setEvents((prev) => [ev as NostrEvent, ...prev]);
-        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
+        if (canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Reposted");
       } catch (e) {
         setStatus("Repost failed: " + (e instanceof Error ? e.message : String(e)));
       }
     },
-    [effectivePrivKey, networkEnabled, canPublishToNetwork]
+    [effectivePrivKey, networkEnabled, canPublishToNetwork, publishViaRelay]
   );
 
   const handleDelete = useCallback(
@@ -1914,13 +1924,13 @@ function App({ profile }: { profile: string | null }) {
           sk
         );
         setEvents((prev) => [ev as NostrEvent, ...prev]);
-        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
+        if (canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Note deleted");
       } catch (e) {
         setStatus("Delete failed: " + (e instanceof Error ? e.message : String(e)));
       }
     },
-    [effectivePrivKey, identities, selfPubkeys, networkEnabled, canPublishToNetwork]
+    [effectivePrivKey, identities, selfPubkeys, networkEnabled, canPublishToNetwork, publishViaRelay]
   );
 
   const handleBookmark = useCallback(
@@ -1936,13 +1946,13 @@ function App({ profile }: { profile: string | null }) {
           sk
         );
         setEvents((prev) => prev.filter((e) => !(e.kind === 10003 && e.pubkey === pubkey)).concat(ev as NostrEvent).sort((a, b) => b.created_at - a.created_at));
-        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
+        if (canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Bookmarked");
       } catch (e) {
         setStatus("Bookmark failed: " + (e instanceof Error ? e.message : String(e)));
       }
     },
-    [effectivePrivKey, pubkey, networkEnabled, canPublishToNetwork, bookmarksEvent]
+    [effectivePrivKey, pubkey, networkEnabled, canPublishToNetwork, bookmarksEvent, publishViaRelay]
   );
 
   const handleUnbookmark = useCallback(
@@ -1958,13 +1968,13 @@ function App({ profile }: { profile: string | null }) {
           sk
         );
         setEvents((prev) => prev.filter((e) => !(e.kind === 10003 && e.pubkey === pubkey)).concat(ev as NostrEvent).sort((a, b) => b.created_at - a.created_at));
-        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
+        if (canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Removed from bookmarks");
       } catch (e) {
         setStatus("Unbookmark failed: " + (e instanceof Error ? e.message : String(e)));
       }
     },
-    [effectivePrivKey, pubkey, networkEnabled, canPublishToNetwork, bookmarksEvent]
+    [effectivePrivKey, pubkey, networkEnabled, canPublishToNetwork, bookmarksEvent, publishViaRelay]
   );
 
   const getRootId = useCallback((note: NostrEvent): string => {
@@ -1991,7 +2001,7 @@ function App({ profile }: { profile: string | null }) {
         setEvents((prev) => [ev as NostrEvent, ...prev]);
         setReplyingTo(null);
         setReplyContent("");
-        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
+        if (canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Replied");
         logger.logAction("reply", "Replied to note", { rootId, networkEnabled });
       } catch (e) {
@@ -1999,7 +2009,7 @@ function App({ profile }: { profile: string | null }) {
         logger.logError("Reply failed", e, { rootId });
       }
     },
-    [effectivePrivKey, replyingTo, replyContent, networkEnabled, canPublishToNetwork, getRootId]
+    [effectivePrivKey, replyingTo, replyContent, networkEnabled, canPublishToNetwork, getRootId, publishViaRelay]
   );
 
   const openZapUrl = useCallback((url: string) => {
@@ -2019,10 +2029,10 @@ function App({ profile }: { profile: string | null }) {
       openZapUrl(zap.zapStreamUrl);
     });
     setStatus(pending.length === 1 ? "Queued zap sent" : `Queued zaps sent (${pending.length})`);
-  }, [networkEnabled, canPublishToNetwork, queuedZaps, relayUrls, openZapUrl]);
+  }, [networkEnabled, canPublishToNetwork, queuedZaps, openZapUrl, publishViaRelay]);
 
   useEffect(() => {
-    if (!networkEnabled || !canPublishToNetwork || relayStatus !== "Synced") return;
+    if (!networkEnabled || !canPublishToNetwork || !(relayStatus.startsWith("Synced") || relayStatus.startsWith("Partially synced"))) return;
     if (queuedZaps.length === 0) return;
     flushQueuedZaps();
   }, [networkEnabled, canPublishToNetwork, relayStatus, queuedZaps.length, flushQueuedZaps]);
@@ -2069,7 +2079,7 @@ function App({ profile }: { profile: string | null }) {
         setStatus("Zap failed: " + (e instanceof Error ? e.message : String(e)));
       }
     },
-    [effectivePrivKey, networkEnabled, canPublishToNetwork, relayUrls, openZapUrl]
+    [effectivePrivKey, networkEnabled, canPublishToNetwork, relayUrls, openZapUrl, publishViaRelay]
   );
 
   const handleEditProfileOpen = useCallback(() => {
@@ -2115,10 +2125,10 @@ function App({ profile }: { profile: string | null }) {
     setEditProfileOpen(false);
     // Never publish kind 0 for Nostr identities—their profile lives on Nostr; publishing would overwrite it
     const isNostr = actingIdentity?.type === "nostr";
-    if (networkEnabled && canPublishToNetwork && !isNostr) publishViaRelay(ev as NostrEvent);
+    if (canPublishToNetwork && !isNostr) publishViaRelay(ev as NostrEvent);
     setStatus(isNostr ? "Profile updated (local only)" : "Profile updated");
     logger.logAction("profile_edit", isNostr ? "Profile updated (local only)" : "Profile updated", { networkEnabled, isNostr });
-  }, [effectivePrivKey, pubkey, editName, editAbout, editPicture, editBanner, networkEnabled, canPublishToNetwork, actingIdentity?.type]);
+  }, [effectivePrivKey, pubkey, editName, editAbout, editPicture, editBanner, networkEnabled, canPublishToNetwork, actingIdentity?.type, publishViaRelay]);
 
   const handlePostMediaUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -2161,7 +2171,7 @@ function App({ profile }: { profile: string | null }) {
           sk
         );
         setEvents((prev) => prev.filter((e) => !(e.kind === 3 && e.pubkey === pubkey)).concat(ev as NostrEvent).sort((a, b) => b.created_at - a.created_at));
-        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
+        if (canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Following");
         logger.logAction("follow", "Followed pubkey", { theirPk: theirPk.slice(0, 8) + "…", networkEnabled });
       } catch (e) {
@@ -2169,7 +2179,7 @@ function App({ profile }: { profile: string | null }) {
         logger.logError("Follow failed", e, { theirPk: theirPk.slice(0, 8) + "…" });
       }
     },
-    [effectivePrivKey, pubkey, events, networkEnabled, canPublishToNetwork]
+    [effectivePrivKey, pubkey, events, networkEnabled, canPublishToNetwork, publishViaRelay]
   );
 
   const handleUnfollow = useCallback(
@@ -2185,13 +2195,13 @@ function App({ profile }: { profile: string | null }) {
           sk
         );
         setEvents((prev) => prev.filter((e) => !(e.kind === 3 && e.pubkey === pubkey)).concat(ev as NostrEvent).sort((a, b) => b.created_at - a.created_at));
-        if (networkEnabled && canPublishToNetwork) publishViaRelay(ev as NostrEvent);
+        if (canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Unfollowed");
       } catch (e) {
         setStatus("Unfollow failed: " + (e instanceof Error ? e.message : String(e)));
       }
     },
-    [effectivePrivKey, pubkey, events, networkEnabled, canPublishToNetwork]
+    [effectivePrivKey, pubkey, events, networkEnabled, canPublishToNetwork, publishViaRelay]
   );
 
   useEffect(() => {
@@ -2225,7 +2235,7 @@ function App({ profile }: { profile: string | null }) {
       }
     })();
     return () => { cancelled = true; };
-  }, [actingIdentity, events, profile]);
+  }, [actingIdentity, events, profile, publishViaRelay]);
 
   // --- Shared NoteCard state & actions ---
   const noteCardState: NoteCardState = useMemo(() => ({

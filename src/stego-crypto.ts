@@ -43,25 +43,21 @@ export async function encryptApp(plaintext: string): Promise<Uint8Array> {
   out.set(iv, off); off += iv.length;
   out.set(new Uint8Array(ciphertext), off);
   console.log("[stego-crypto] encryptApp: plaintext len=", plaintext.length, "output len=", out.length);
-  console.log("[stego-crypto] encryptApp: first 32 bytes=", Array.from(out.slice(0, 32)));
-  console.log("[stego-crypto] encryptApp: iv=", Array.from(iv));
   return out;
 }
 
 /** Decrypt app-encrypted payload. Returns inner plaintext string. */
 export async function decryptApp(encrypted: Uint8Array): Promise<string> {
   console.log("[stego-crypto] decryptApp: encrypted len=", encrypted.length);
-  console.log("[stego-crypto] decryptApp: first 32 bytes=", Array.from(encrypted.slice(0, 32)));
   if (encrypted.length < STEGSTR_MAGIC.length + 1 + 12 + 16) throw new Error("Payload too short");
   const magic = encrypted.slice(0, STEGSTR_MAGIC.length);
-  console.log("[stego-crypto] decryptApp: magic=", Array.from(magic), "expected=", Array.from(STEGSTR_MAGIC));
   if ([...magic].some((b, i) => b !== STEGSTR_MAGIC[i])) throw new Error("Invalid Stegstr encrypted payload");
   const version = encrypted[STEGSTR_MAGIC.length];
   console.log("[stego-crypto] decryptApp: version=", version);
   if (version !== VERSION) throw new Error("Unsupported encryption version");
   const iv = encrypted.slice(STEGSTR_MAGIC.length + 1, STEGSTR_MAGIC.length + 1 + 12);
   const ciphertext = encrypted.slice(STEGSTR_MAGIC.length + 1 + 12);
-  console.log("[stego-crypto] decryptApp: iv=", Array.from(iv), "ciphertext len=", ciphertext.length);
+  console.log("[stego-crypto] decryptApp: ciphertext len=", ciphertext.length);
   const key = await getAppKey();
   try {
     const dec = await crypto.subtle.decrypt(

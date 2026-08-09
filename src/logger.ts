@@ -44,7 +44,7 @@ function entry(level: LogLevel, message: string, opts?: { action?: LogAction; de
     ts: new Date().toISOString(),
     level,
     message,
-    ...opts?.details && { details: opts.details },
+    ...opts?.details && { details: redactDetails(opts.details) },
   };
   if (opts?.action) e.action = opts.action;
   if (opts?.error !== undefined) {
@@ -52,6 +52,13 @@ function entry(level: LogLevel, message: string, opts?: { action?: LogAction; de
     if (opts.error instanceof Error && opts.error.stack) e.stack = opts.error.stack;
   }
   return e;
+}
+
+function redactDetails(details: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(details).map(([key, value]) => [
+    key,
+    /private|privkey|secret|nsec|payload|ciphertext|plaintext/i.test(key) ? "[redacted]" : value,
+  ]));
 }
 
 function flush(ent: LogEntry): void {
