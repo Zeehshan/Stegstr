@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "payload_hex": "7b9892094daead7072515e357aaaeac71190a23dc9362b72b587e4594135bcd2",
+  "payload_size_bytes": 32,
+  "vectors": [
+    {
+      "algorithm": "rust-dwt",
+      "file": "rust-dwt.png",
+      "sha256": "369c1921e04fac7699b92351ffc5fc060e44b71c9e47de56a397c64ac5a88d09",
+      "compatibility_group": "rust-dwt-v1"
+    },
+    {
+      "algorithm": "rust-dot",
+      "file": "rust-dot.png",
+      "sha256": "d4042848d96c24082aa6f57cc208fb11af0cd791d2f7b262dfb2d2e359cb0098",
+      "compatibility_group": "rust-dot-v1"
+    },
+    {
+      "algorithm": "typescript-dot",
+      "file": "typescript-dot.png",
+      "sha256": "daf1302dd1bfd30da03b68100a17ab236d5bc05e50d8f03eae44cbdb1e6ac07a",
+      "compatibility_group": "typescript-dot-v1"
+    },
+    {
+      "algorithm": "typescript-qim",
+      "file": "typescript-qim.jpg",
+      "sha256": "e834f759c8148ea100d7126ab3797040d537de0d7a7beeecd7db30d58b8cf693",
+      "compatibility_group": "typescript-qim-v1"
+    }
+  ],
+  "cross_compatibility": {
+    "rust-dwt_to_rust-dot": "incompatible",
+    "rust-dwt_to_typescript-dot": "incompatible",
+    "rust-dwt_to_typescript-qim": "incompatible",
+    "rust-dot_to_typescript-dot": "incompatible-repetition-layout",
+    "rust-dot_to_typescript-qim": "incompatible",
+    "typescript-dot_to_typescript-qim": "incompatible"
+  }
+}
