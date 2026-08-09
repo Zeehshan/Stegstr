@@ -76,6 +76,48 @@ fn decode_stego_dot(path: String) -> Result<StegoDecodeResult, String> {
 }
 
 #[tauri::command]
+fn decode_stego_robust_v2(path: String) -> Result<StegoDecodeResult, String> {
+    let p = normalize_path(&path);
+    match stego_v2::decode(std::path::Path::new(p)) {
+        Ok(result) => Ok(StegoDecodeResult {
+            ok: true,
+            payload: Some(format!("base64:{}", base64::engine::general_purpose::STANDARD.encode(result.payload))),
+            error: None,
+        }),
+        Err(e) => Ok(StegoDecodeResult {
+            ok: false,
+            payload: None,
+            error: Some(e),
+        }),
+    }
+}
+
+#[tauri::command]
+fn get_robust_v2_capacity(path: String) -> Result<usize, String> {
+    let p = normalize_path(&path);
+    let (width, height) = image::image_dimensions(p).map_err(|e| e.to_string())?;
+    Ok(stego_v2::capacity_for_dimensions(width, height, stego_v2::RobustnessProfile::Robust).usable_plaintext_capacity_bytes)
+}
+
+#[tauri::command]
+fn encode_stego_robust_v2(cover_path: String, output_path: String, payload: String) -> Result<StegoEncodeResult, String> {
+    let cover = normalize_path(&cover_path);
+    let output = normalize_path(&output_path);
+    let encoded_payload = payload.strip_prefix("base64:")
+        .ok_or_else(|| "robust-v2 payload must be base64 encoded".to_string())?;
+    let payload_bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded_payload.trim())
+        .map_err(|e| e.to_string())?;
+    match stego_v2::encode(std::path::Path::new(cover), &payload_bytes, stego_v2::RobustnessProfile::Robust) {
+        Ok(encoded) => {
+            std::fs::write(output, encoded).map_err(|e| e.to_string())?;
+            Ok(StegoEncodeResult { ok: true, path: Some(output.to_string()), error: None })
+        }
+        Err(e) => Ok(StegoEncodeResult { ok: false, path: None, error: Some(e) }),
+    }
+}
+
+#[tauri::command]
 fn encode_stego_image(cover_path: String, output_path: String, payload: String) -> Result<StegoEncodeResult, String> {
     let cover = normalize_path(&cover_path);
     let output = normalize_path(&output_path);
@@ -369,6 +411,9 @@ pub fn run() {
             encode_stego_image,
             decode_stego_dot,
             encode_stego_dot,
+            decode_stego_robust_v2,
+            encode_stego_robust_v2,
+            get_robust_v2_capacity,
             get_dot_capacity,
             check_png_signature,
             decode_stego_qim,
@@ -385,8 +430,36 @@ pub fn run() {
             native_keys::native_sign_event,
             native_keys::native_nip04_encrypt,
             native_keys::native_nip04_decrypt,
-            native_keys::native_key_export
+            native_keys::native_key_export,
+            native_keys::native_key_delete
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+
+    #[test]
+    fn robust_v2_tauri_adapters_round_trip() {
+        let suffix = std::process::id();
+        let cover = std::env::temp_dir().join(format!("stegstr-command-cover-{suffix}.png"));
+        let output = std::env::temp_dir().join(format!("stegstr-command-output-{suffix}.jpg"));
+        let mut image = image::RgbImage::new(640, 480);
+        for (index, pixel) in image.pixels_mut().enumerate() {
+            let x = (index as u32 % 640) as u8;
+            let y = (index as u32 / 640) as u8;
+            *pixel = image::Rgb([x.wrapping_mul(3).wrapping_add(y), y.wrapping_mul(5), x ^ y]);
+        }
+        image.save(&cover).unwrap();
+        let payload = b"tauri robust-v2 adapter";
+        let encoded_payload = format!("base64:{}", base64::engine::general_purpose::STANDARD.encode(payload));
+        let result = encode_stego_robust_v2(cover.to_string_lossy().to_string(), output.to_string_lossy().to_string(), encoded_payload).unwrap();
+        assert!(result.ok);
+        let decoded = decode_stego_robust_v2(output.to_string_lossy().to_string()).unwrap();
+        assert_eq!(decoded.payload.unwrap(), format!("base64:{}", base64::engine::general_purpose::STANDARD.encode(payload)));
+        let _ = std::fs::remove_file(cover);
+        let _ = std::fs::remove_file(output);
+    }
 }

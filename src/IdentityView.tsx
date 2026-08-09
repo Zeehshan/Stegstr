@@ -2,7 +2,7 @@ import { useState } from "react";
 import * as Nostr from "./nostr-stub";
 import type { IdentityEntry, ProfileData } from "./types";
 import type { ConnectRelaysResult } from "./relay";
-import { exportIdentitySecret, identityPublicKey } from "./identity-crypto";
+import { deleteIdentityMaterial, exportIdentitySecret, identityPublicKey } from "./identity-crypto";
 
 export interface IdentityViewProps {
   identities: IdentityEntry[];
@@ -62,7 +62,21 @@ export function IdentityView({
                   <span className="info-icon" tabIndex={0} data-tooltip="Act sets the identity used for posting, replying, liking, and zapping.">ⓘ</span>
                 </label>
                 {identities.length > 1 && (
-                  <button type="button" className="identity-card-remove" onClick={() => { const remaining = identities.filter((i) => i.id !== id.id); setIdentities(remaining); setViewingPubkeys((p) => { const n = new Set(p); n.delete(pk); return n; }); if (isActing && remaining[0]) setActingPubkey(identityPublicKey(remaining[0])); }} title="Remove identity">Remove</button>
+                  <button type="button" className="identity-card-remove" onClick={async () => {
+                    try {
+                      await deleteIdentityMaterial(id);
+                    } catch (error) {
+                      onStatus("Identity removal failed; protected credential was not deleted: " + (error instanceof Error ? error.message : String(error)));
+                      return;
+                    }
+                    const remaining = identities.filter((identity) => identity.id !== id.id);
+                    setIdentities(remaining);
+                    setViewingPubkeys((previous) => { const next = new Set(previous); next.delete(pk); return next; });
+                    setRevealedSecrets((previous) => { const next = { ...previous }; delete next[id.id]; return next; });
+                    if (showNsecFor === id.id) setShowNsecFor(null);
+                    if (isActing && remaining[0]) setActingPubkey(identityPublicKey(remaining[0]));
+                    onStatus("Identity and protected credential removed");
+                  }} title="Remove identity">Remove</button>
                 )}
               </div>
               <div className="identity-card-pubkey">

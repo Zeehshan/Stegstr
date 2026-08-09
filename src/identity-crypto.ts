@@ -76,3 +76,11 @@ export async function exportIdentitySecret(identity: IdentityEntry): Promise<str
   }
   return Nostr.nip19.nsecEncode(Nostr.hexToBytes(privateKeyHex));
 }
+
+/** Delete the protected desktop credential only after an explicit identity removal. */
+export async function deleteIdentityMaterial(identity: IdentityEntry): Promise<void> {
+  if (isWeb()) return;
+  if (!identity.keyHandle) throw new Error("Native identity migration is incomplete");
+  const { invoke } = await getTauri();
+  await invoke("native_key_delete", { keyHandle: identity.keyHandle });
+}

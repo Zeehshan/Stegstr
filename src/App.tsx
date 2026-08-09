@@ -1294,11 +1294,14 @@ function App({ profile }: { profile: string | null }) {
     try {
       const isJpeg = /\.jpe?g$/i.test(path);
       let result: { ok: boolean; payload?: string; error?: string };
-      setStegoProgress("Extracting hidden data (Dot decode)...");
-      addStegoLog("Running Dot steganography decode...");
-      console.log("[Detect] Trying Dot decode first:", path);
-      result = await tauri.invoke<{ ok: boolean; payload?: string; error?: string }>("decode_stego_dot", { path });
-      console.log("[Detect] Dot result: ok=", result.ok, "error=", result.error ?? "(none)");
+      setStegoProgress("Extracting hidden data (robust-v2 decode)...");
+      addStegoLog("Running robust-v2 steganography decode...");
+      result = await tauri.invoke<{ ok: boolean; payload?: string; error?: string }>("decode_stego_robust_v2", { path });
+      if (!result.ok) {
+        addStegoLog(`Robust-v2 decode failed: ${result.error ?? "unknown error"}`);
+        setStegoProgress("Trying legacy Dot decode...");
+        result = await tauri.invoke<{ ok: boolean; payload?: string; error?: string }>("decode_stego_dot", { path });
+      }
       if (!result.ok) {
         addStegoLog(`Dot decode failed: ${result.error ?? "unknown error"}`);
         if (isJpeg) {
@@ -1698,14 +1701,15 @@ function App({ profile }: { profile: string | null }) {
         return;
       }
       const coverName = coverPath.replace(/^.*[/\\]/, "").replace(/\.[^.]+$/, "") || "image";
-      const ext = "png";
+      const useRobustV2 = embedMethod === "qim";
+      const ext = useRobustV2 ? "jpg" : "png";
       let defaultPath = `${coverName}.${ext}`;
       try {
         const desktop = await tauri.invoke<string>("get_desktop_path");
         if (desktop) defaultPath = `${desktop}/${coverName}.${ext}`;
       } catch (_) {}
       const outputPath = await tauri.saveDialog({
-        filters: [{ name: "PNG", extensions: [ext] }],
+        filters: [{ name: useRobustV2 ? "JPEG" : "PNG", extensions: [ext] }],
         defaultPath,
       });
       if (!outputPath) {
@@ -1715,8 +1719,8 @@ function App({ profile }: { profile: string | null }) {
       const finalOutputPath = outputPath.endsWith(`.${ext}`) ? outputPath : outputPath + `.${ext}`;
       let maxPayloadBytes = 0;
       try {
-        maxPayloadBytes = await tauri.invoke<number>("get_dot_capacity", { path: coverPath });
-        addStegoLog(`Dot capacity: ${maxPayloadBytes} bytes`);
+        maxPayloadBytes = await tauri.invoke<number>(useRobustV2 ? "get_robust_v2_capacity" : "get_dot_capacity", { path: coverPath });
+        addStegoLog(`${useRobustV2 ? "Robust-v2" : "Dot"} capacity: ${maxPayloadBytes} bytes`);
       } catch (e) {
         addStegoLog(`Dot capacity check failed: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -1762,8 +1766,8 @@ function App({ profile }: { profile: string | null }) {
         addStegoLog(`Trimmed events: kept ${trimmedEvents.length}/${events.length} to fit capacity`);
       }
       const payloadToEmbed = "base64:" + uint8ArrayToBase64(payloadBytes);
-      setStegoProgress("Embedding with Dot (offset, robust)...");
-      const cmd = "encode_stego_dot";
+      setStegoProgress(useRobustV2 ? "Embedding with robust-v2..." : "Embedding with Dot...");
+      const cmd = useRobustV2 ? "encode_stego_robust_v2" : "encode_stego_dot";
       const result = await tauri.invoke<{ ok: boolean; path?: string; error?: string }>(cmd, {
         coverPath,
         outputPath: finalOutputPath,
@@ -1771,9 +1775,16 @@ function App({ profile }: { profile: string | null }) {
       });
       setEmbedModalOpen(false);
       if (result.ok && result.path) {
+        if (useRobustV2) {
+          const selfTest = await tauri.invoke<{ ok: boolean; payload?: string; error?: string }>("decode_stego_robust_v2", { path: result.path });
+          if (selfTest.payload !== payloadToEmbed) throw new Error(selfTest.error || "Robust-v2 self-test payload mismatch");
+          addStegoLog("Robust-v2 round-trip self-test: PASS");
+        }
         try {
-          const isPng = await tauri.invoke<boolean>("check_png_signature", { path: result.path });
-          addStegoLog(`PNG signature check: ${isPng ? "OK" : "FAIL"}`);
+          if (!useRobustV2) {
+            const isPng = await tauri.invoke<boolean>("check_png_signature", { path: result.path });
+            addStegoLog(`PNG signature check: ${isPng ? "OK" : "FAIL"}`);
+          }
         } catch (e) {
           addStegoLog(`PNG signature check error: ${e instanceof Error ? e.message : String(e)}`);
         }

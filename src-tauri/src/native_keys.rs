@@ -43,6 +43,7 @@ pub struct SignedEvent {
 trait SecretStore {
     fn get(&self, handle: &str) -> Result<Vec<u8>, String>;
     fn set(&self, handle: &str, secret: &[u8]) -> Result<(), String>;
+    fn delete(&self, handle: &str) -> Result<(), String>;
 }
 
 #[derive(Clone, Copy)]
@@ -60,6 +61,13 @@ impl SecretStore for KeyringStore {
         keyring::Entry::new(KEYRING_SERVICE, handle)
             .map_err(keyring_error)?
             .set_secret(secret)
+            .map_err(keyring_error)
+    }
+
+    fn delete(&self, handle: &str) -> Result<(), String> {
+        keyring::Entry::new(KEYRING_SERVICE, handle)
+            .map_err(keyring_error)?
+            .delete_credential()
             .map_err(keyring_error)
     }
 }
@@ -227,6 +235,14 @@ impl<S: SecretStore> NativeKeyService<S> {
         Ok(hex::encode(secret.secret_bytes()))
     }
 
+    fn delete(&self, key_handle: &str) -> Result<(), String> {
+        validate_handle(key_handle)?;
+        // Require the credential to exist before deletion so the frontend does
+        // not discard usable identity metadata after a failed cleanup.
+        self.load_secret(key_handle)?;
+        self.store.delete(key_handle)
+    }
+
     fn load_secret(&self, key_handle: &str) -> Result<SecretKey, String> {
         validate_handle(key_handle)?;
         let bytes = Zeroizing::new(
@@ -345,6 +361,11 @@ pub fn native_key_export(key_handle: String) -> Result<String, String> {
     NativeKeyService::new(KeyringStore).export_hex(&key_handle)
 }
 
+#[tauri::command]
+pub fn native_key_delete(key_handle: String) -> Result<(), String> {
+    NativeKeyService::new(KeyringStore).delete(&key_handle)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,6 +392,14 @@ mod tests {
                 .unwrap()
                 .insert(handle.into(), secret.to_vec());
             Ok(())
+        }
+        fn delete(&self, handle: &str) -> Result<(), String> {
+            self.0
+                .lock()
+                .unwrap()
+                .remove(handle)
+                .map(|_| ())
+                .ok_or("missing".into())
         }
     }
 
@@ -412,6 +441,19 @@ mod tests {
             service.lookup(&handle).unwrap_err(),
             "unknown or unavailable key handle"
         );
+    }
+
+    #[test]
+    fn deletion_removes_only_the_requested_credential() {
+        let service = NativeKeyService::new(MemoryStore::default());
+        let first = service.import_hex(&fixed_secret(10), None).unwrap();
+        let second = service.import_hex(&fixed_secret(11), None).unwrap();
+        service.delete(&first.key_handle).unwrap();
+        assert_eq!(
+            service.lookup(&first.key_handle).unwrap_err(),
+            "unknown or unavailable key handle"
+        );
+        assert_eq!(service.lookup(&second.key_handle).unwrap(), second);
     }
 
     #[test]
@@ -505,9 +547,10 @@ mod tests {
                 "credential metadata was not found in macOS Keychain"
             );
         }
-        keyring::Entry::new(KEYRING_SERVICE, &identity.key_handle)
-            .unwrap()
-            .delete_credential()
-            .unwrap();
+        service.delete(&identity.key_handle).unwrap();
+        assert_eq!(
+            service.lookup(&identity.key_handle).unwrap_err(),
+            "unknown or unavailable key handle"
+        );
     }
 }

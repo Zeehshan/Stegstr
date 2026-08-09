@@ -189,7 +189,7 @@ export function EmbedModal({
               <div style={{ display: "flex", gap: "1rem" }}>
                 <label style={{ cursor: "pointer" }}>
                   <input type="radio" name="stego-method" checked={stegoMethod === "qim"} onChange={() => onStegoMethodChange("qim")} />
-                  {" "}QIM (JPEG, robust)
+                  {" "}{isWeb() ? "QIM (JPEG, robust)" : "Robust v2 (JPEG)"}
                 </label>
                 <label style={{ cursor: "pointer" }}>
                   <input type="radio" name="stego-method" checked={stegoMethod === "dot"} onChange={() => onStegoMethodChange("dot")} />
@@ -199,7 +199,7 @@ export function EmbedModal({
             </div>
 
             {/* Platform selector (QIM only) */}
-            {stegoMethod === "qim" && (
+            {isWeb() && stegoMethod === "qim" && (
               <div className="embed-platform-selector" style={{ marginTop: "0.5rem" }}>
                 <label className="embed-section-label">Target platform:</label>
                 <select
