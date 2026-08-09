@@ -112,6 +112,20 @@ describe("RelayManager connection lifecycle", () => {
     manager.close();
   });
 
+  it("normalizes opaque WebSocket errors into a useful diagnostic", () => {
+    const errors: unknown[] = [];
+    const sockets: MockSocket[] = [];
+    const manager = new RelayManager(["wss://one.test"], ["1".repeat(64)], () => {}, undefined, (error) => errors.push(error), {
+      websocketFactory: (url) => { const socket = new MockSocket(url); sockets.push(socket); return socket; },
+      storage: null, onlineTarget: null, isOnline: () => true, random: () => 0.5,
+    });
+    manager.start();
+    sockets[0].onerror?.({ type: "error" });
+    expect(manager.snapshot().relays[0].lastError).toBe("WebSocket error");
+    expect(errors).toHaveLength(1);
+    manager.close();
+  });
+
   it("reconnects at 1s then 2s and restores active subscriptions", () => {
     const { manager, sockets } = harness();
     sockets[0].open();

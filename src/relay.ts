@@ -400,7 +400,7 @@ export class RelayManager {
   }
 
   private failNode(node: RelayNode, error: unknown): void {
-    node.lastError = error instanceof Error ? error.message : String(error);
+    node.lastError = describeRelayError(error);
     this.onError?.(error);
     const socket = node.socket;
     node.socket = null;
@@ -628,6 +628,12 @@ export class RelayManager {
   private handleVisibility = () => {
     if (typeof document === "undefined" || document.visibilityState === "visible") this.reconnectNow();
   };
+}
+
+function describeRelayError(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (error && typeof error === "object" && "message" in error && typeof error.message === "string" && error.message) return error.message;
+  return "WebSocket error";
 }
 
 export type ConnectRelaysResult = {
