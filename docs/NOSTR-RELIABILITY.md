@@ -68,5 +68,7 @@ Network state does not gate local event creation, the event cache, steganography
 encoding/decoding, or cached browsing. The relay manager receives signed public
 events and public keys only; it never receives private keys.
 
-Private keys are still plaintext in localStorage. That pre-existing limitation
-and the deferred native-storage migration are documented in `SECURITY-NOTES.md`.
+Desktop private keys are referenced by opaque handles and stored in the native
+OS credential store. Browser builds retain the explicitly weaker localStorage
+fallback. The platform boundary and migration are documented in
+`NATIVE-KEY-STORAGE.md` and `SECURITY-NOTES.md`.

@@ -2,6 +2,7 @@ pub mod stego;
 pub mod stego_crypto;
 pub mod stego_dot;
 pub mod stego_v2;
+pub mod native_keys;
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -377,7 +378,14 @@ pub fn run() {
             get_exchange_path,
             get_exchange_path_qim,
             reveal_in_finder,
-            stegstr_log
+            stegstr_log,
+            native_keys::native_key_create,
+            native_keys::native_key_import,
+            native_keys::native_key_lookup,
+            native_keys::native_sign_event,
+            native_keys::native_nip04_encrypt,
+            native_keys::native_nip04_decrypt,
+            native_keys::native_key_export
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

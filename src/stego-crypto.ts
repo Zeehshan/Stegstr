@@ -92,6 +92,18 @@ export async function encryptForRecipients(
   ourPrivKeyHex: string,
   recipientPubkeys: string[]
 ): Promise<Uint8Array> {
+  const ourPubkey = Nostr.getPublicKey(Nostr.hexToBytes(ourPrivKeyHex));
+  return encryptForRecipientsWithNip04(jsonString, ourPubkey, recipientPubkeys, (plaintext, recipient) =>
+    Nostr.nip04Encrypt(plaintext, ourPrivKeyHex, recipient)
+  );
+}
+
+export async function encryptForRecipientsWithNip04(
+  jsonString: string,
+  ourPubkey: string,
+  recipientPubkeys: string[],
+  encryptNip04: (plaintext: string, recipientPubkey: string) => Promise<string>,
+): Promise<Uint8Array> {
   const symKey = Nostr.generateSecretKey();
   const symKeyHex = Nostr.bytesToHex(symKey);
   const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -120,10 +132,9 @@ export async function encryptForRecipients(
     return btoa(s);
   })();
 
-  const ourPubkey = Nostr.getPublicKey(Nostr.hexToBytes(ourPrivKeyHex));
   const r: { p: string; k: string }[] = [];
   for (const pk of recipientPubkeys) {
-    const encK = await Nostr.nip04Encrypt(symKeyHex, ourPrivKeyHex, pk);
+    const encK = await encryptNip04(symKeyHex, pk);
     r.push({ p: pk, k: encK });
   }
 
@@ -136,6 +147,17 @@ export async function decryptPayload(
   encryptedBytes: Uint8Array,
   ourPrivKeyHex: string
 ): Promise<string> {
+  const ourPubkey = Nostr.getPublicKey(Nostr.hexToBytes(ourPrivKeyHex));
+  return decryptPayloadWithNip04(encryptedBytes, ourPubkey, (payload, senderPubkey) =>
+    Nostr.nip04Decrypt(payload, ourPrivKeyHex, senderPubkey)
+  );
+}
+
+export async function decryptPayloadWithNip04(
+  encryptedBytes: Uint8Array,
+  ourPubkey: string,
+  decryptNip04: (payload: string, senderPubkey: string) => Promise<string>,
+): Promise<string> {
   const inner = await decryptApp(encryptedBytes);
   let parsed: unknown;
   try {
@@ -145,11 +167,10 @@ export async function decryptPayload(
   }
   if (typeof parsed === "object" && parsed !== null && "t" in parsed && (parsed as { t: string }).t === "r") {
     const env = parsed as RecipientsEnvelope;
-    const ourPubkey = Nostr.getPublicKey(Nostr.hexToBytes(ourPrivKeyHex));
     const entry = env.r.find((x) => x.p === ourPubkey || x.p.toLowerCase() === ourPubkey.toLowerCase());
     if (!entry) throw new Error("You are not a recipient of this stego image");
     const senderPubkey = "s" in env ? env.s : entry.p;
-    const symKeyHex = await Nostr.nip04Decrypt(entry.k, ourPrivKeyHex, senderPubkey);
+    const symKeyHex = await decryptNip04(entry.k, senderPubkey);
     const ctWithIv = Uint8Array.from(atob(env.c), (c) => c.charCodeAt(0));
     const iv = ctWithIv.slice(0, 12);
     const ciphertext = ctWithIv.slice(12);

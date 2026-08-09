@@ -1,6 +1,8 @@
+import { useState } from "react";
 import * as Nostr from "./nostr-stub";
 import type { IdentityEntry, ProfileData } from "./types";
 import type { ConnectRelaysResult } from "./relay";
+import { exportIdentitySecret, identityPublicKey } from "./identity-crypto";
 
 export interface IdentityViewProps {
   identities: IdentityEntry[];
@@ -24,6 +26,7 @@ export function IdentityView({
   actingPubkey, setActingPubkey, showNsecFor, setShowNsecFor,
   networkEnabled, relayRef, onGenerate, onLoginOpen, onStatus,
 }: IdentityViewProps) {
+  const [revealedSecrets, setRevealedSecrets] = useState<Record<string, string>>({});
   return (
     <section className="identity-view">
       <h2>Identity</h2>
@@ -37,7 +40,7 @@ export function IdentityView({
       </div>
       <ul className="identity-list">
         {identities.map((id) => {
-          const pk = Nostr.getPublicKey(Nostr.hexToBytes(id.privKeyHex));
+          const pk = identityPublicKey(id);
           const isViewing = viewingPubkeys.has(pk);
           const isActing = actingPubkey === pk;
           const displayLabel = profiles[pk]?.name || id.label || pk.slice(0, 8) + "…";
@@ -59,7 +62,7 @@ export function IdentityView({
                   <span className="info-icon" tabIndex={0} data-tooltip="Act sets the identity used for posting, replying, liking, and zapping.">ⓘ</span>
                 </label>
                 {identities.length > 1 && (
-                  <button type="button" className="identity-card-remove" onClick={() => { const remaining = identities.filter((i) => i.id !== id.id); setIdentities(remaining); setViewingPubkeys((p) => { const n = new Set(p); n.delete(pk); return n; }); if (isActing && remaining[0]) setActingPubkey(Nostr.getPublicKey(Nostr.hexToBytes(remaining[0].privKeyHex))); }} title="Remove identity">Remove</button>
+                  <button type="button" className="identity-card-remove" onClick={() => { const remaining = identities.filter((i) => i.id !== id.id); setIdentities(remaining); setViewingPubkeys((p) => { const n = new Set(p); n.delete(pk); return n; }); if (isActing && remaining[0]) setActingPubkey(identityPublicKey(remaining[0])); }} title="Remove identity">Remove</button>
                 )}
               </div>
               <div className="identity-card-pubkey">
@@ -67,19 +70,31 @@ export function IdentityView({
                 <span className="info-icon" tabIndex={0} data-tooltip="Your public key (npub). Safe to share. Click it to copy.">ⓘ</span>
               </div>
               <div className="identity-card-nsec">
-                <button type="button" className="identity-show-nsec-btn" onClick={() => setShowNsecFor(showNsecFor === id.id ? null : id.id)}>
-                  {showNsecFor === id.id ? "Hide secret key" : "Show secret key"}
+                <button type="button" className="identity-show-nsec-btn" onClick={async () => {
+                  if (showNsecFor === id.id) {
+                    setShowNsecFor(null);
+                    setRevealedSecrets((previous) => { const next = { ...previous }; delete next[id.id]; return next; });
+                    return;
+                  }
+                  try {
+                    const nsec = await exportIdentitySecret(id);
+                    setRevealedSecrets((previous) => ({ ...previous, [id.id]: nsec }));
+                    setShowNsecFor(id.id);
+                  } catch (error) {
+                    onStatus("Secret-key export failed: " + (error instanceof Error ? error.message : String(error)));
+                  }
+                }}>
+                  {showNsecFor === id.id ? "Hide exported secret" : "Export secret key"}
                 </button>
-                {showNsecFor === id.id && (
+                {showNsecFor === id.id && revealedSecrets[id.id] && (
                   <div className="identity-nsec-reveal">
                     <p className="nsec-warning">Keep this secret! Anyone with this key controls this identity. Save it to restore this identity later.</p>
-                    <code className="nsec-value">{Nostr.nip19.nsecEncode(Nostr.hexToBytes(id.privKeyHex))}</code>
+                    <code className="nsec-value">{revealedSecrets[id.id]}</code>
                     <button
                       type="button"
                       className="nsec-copy-btn"
                       onClick={async () => {
-                        const nsec = Nostr.nip19.nsecEncode(Nostr.hexToBytes(id.privKeyHex));
-                        await navigator.clipboard.writeText(nsec);
+                        await navigator.clipboard.writeText(revealedSecrets[id.id]);
                         onStatus("Secret key copied!");
                         setTimeout(() => onStatus(""), 2000);
                       }}

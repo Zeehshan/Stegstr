@@ -38,6 +38,15 @@ import { EditProfileModal } from "./EditProfileModal";
 import { LoginModal } from "./LoginModal";
 import { NewMessageModal } from "./NewMessageModal";
 import type { NostrEvent, NostrStateBundle, IdentityEntry, View, ProfileData } from "./types";
+import {
+  createIdentityMaterial,
+  identityPublicKey,
+  importIdentityMaterial,
+  nip04DecryptWithIdentity,
+  nip04EncryptWithIdentity,
+  signEventWithIdentity,
+} from "./identity-crypto";
+import { loadIdentityEntries, migrateIdentityStorage, saveIdentityEntries } from "./identity-storage";
 import "./App.css";
 
 const STEGSTR_BUNDLE_VERSION = 1;
@@ -132,63 +141,13 @@ function loadQueuedZaps(profile: string | null): QueuedZap[] {
   }
 }
 
-function loadIdentities(profile: string | null): IdentityEntry[] {
-  try {
-    const raw = localStorage.getItem(getStorageKey(BASE_IDENTITIES, profile));
-    if (!raw) return [];
-    const arr = JSON.parse(raw) as unknown[];
-    if (!Array.isArray(arr)) return [];
-    return arr
-      .filter(
-        (x): x is IdentityEntry =>
-          typeof x === "object" &&
-          x !== null &&
-          typeof (x as IdentityEntry).id === "string" &&
-          typeof (x as IdentityEntry).privKeyHex === "string" &&
-          /^[a-fA-F0-9]{64}$/.test((x as IdentityEntry).privKeyHex)
-      )
-      .map((x) => {
-        const ent = x as IdentityEntry;
-        if (ent.category !== "local" && ent.category !== "nostr") {
-          return { ...ent, category: ent.type === "nostr" ? "nostr" as const : "local" as const };
-        }
-        return ent;
-      });
-  } catch (_) {}
-  return [];
-}
-
-function migrateToIdentities(profile: string | null): IdentityEntry[] {
-  const existing = loadIdentities(profile);
-  if (existing.length > 0) return existing;
-  const migrated: IdentityEntry[] = [];
-  try {
-    const anonKey = localStorage.getItem(getStorageKey(BASE_ANON_KEY, profile));
-    if (anonKey && /^[a-fA-F0-9]{64}$/.test(anonKey)) {
-      const pubkey = Nostr.getPublicKey(Nostr.hexToBytes(anonKey));
-      migrated.push({
-        id: "anon-" + pubkey.slice(0, 12),
-        privKeyHex: anonKey,
-        label: "Local",
-        type: "local",
-        category: "local",
-      });
-    }
-  } catch (_) {}
-  if (migrated.length > 0) {
-    try {
-      localStorage.setItem(getStorageKey(BASE_IDENTITIES, profile), JSON.stringify(migrated));
-    } catch (_) {}
-  }
-  return migrated;
-}
-
 export type { IdentityEntry } from "./types";
 
 function App({ profile }: { profile: string | null }) {
   const toast = useToast();
   const [initialNostrState] = useState(() => loadCachedNostrState(browserStorage(), getStorageKey(BASE_NOSTR_CACHE, profile)));
-  const [identities, setIdentities] = useState<IdentityEntry[]>(() => migrateToIdentities(profile));
+  const [identities, setIdentities] = useState<IdentityEntry[]>(() => loadIdentityEntries(browserStorage(), getStorageKey(BASE_IDENTITIES, profile), getStorageKey(BASE_ANON_KEY, profile)));
+  const [nativeKeysReady, setNativeKeysReady] = useState(() => isWeb());
   const [actingPubkey, setActingPubkey] = useState<string | null>(() => {
     try {
       const raw = localStorage.getItem(getStorageKey(BASE_ACTING, profile));
@@ -396,22 +355,66 @@ function App({ profile }: { profile: string | null }) {
   }, [networkEnabled]);
   const hasSyncedAnonRef = useRef(false);
 
+  useEffect(() => {
+    if (isWeb()) return;
+    const storage = browserStorage();
+    if (!storage) {
+      setStatus("Protected-key migration unavailable: local identity metadata storage is inaccessible.");
+      return;
+    }
+    let cancelled = false;
+    migrateIdentityStorage(
+      storage,
+      getStorageKey(BASE_IDENTITIES, profile),
+      getStorageKey(BASE_ANON_KEY, profile),
+      {
+        importKey: async (privateKeyHex, expectedPublicKey) => {
+          const material = await importIdentityMaterial(privateKeyHex, expectedPublicKey);
+          if (!material.keyHandle || !material.publicKey) throw new Error("Native credential import did not return a key handle");
+          return { keyHandle: material.keyHandle, publicKey: material.publicKey };
+        },
+      },
+    ).then((migrated) => {
+      if (cancelled) return;
+      setIdentities(migrated);
+      setNativeKeysReady(true);
+    }).catch((error) => {
+      if (cancelled) return;
+      setStatus("Protected-key migration failed; the original key was retained for retry: " + (error instanceof Error ? error.message : String(error)));
+      logger.logError("Protected-key migration failed", error);
+    });
+    return () => { cancelled = true; };
+  }, [profile]);
+
   // Ensure at least one identity
   useEffect(() => {
-    if (identities.length === 0) {
-      const anon = getOrCreateAnonKey(profile);
-      const pubkey = Nostr.getPublicKey(Nostr.hexToBytes(anon));
-      setIdentities([{ id: "anon-" + pubkey.slice(0, 12), privKeyHex: anon, label: "Local", type: "local", category: "local" }]);
-      setActingPubkey(pubkey);
-      setViewingPubkeys(new Set([pubkey]));
-    }
-  }, [identities.length, profile]);
+    if (identities.length !== 0 || !nativeKeysReady) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        let material: Pick<IdentityEntry, "publicKey" | "keyHandle" | "privKeyHex">;
+        if (isWeb()) {
+          const anon = getOrCreateAnonKey(profile);
+          material = { publicKey: Nostr.getPublicKey(Nostr.hexToBytes(anon)), privKeyHex: anon };
+        } else {
+          material = await createIdentityMaterial();
+        }
+        if (cancelled || !material.publicKey) return;
+        const identity: IdentityEntry = { id: "anon-" + material.publicKey.slice(0, 12), ...material, label: "Local", type: "local", category: "local" };
+        setIdentities([identity]);
+        setActingPubkey(material.publicKey);
+        setViewingPubkeys(new Set([material.publicKey]));
+      } catch (error) {
+        if (!cancelled) setStatus("Could not create protected identity: " + (error instanceof Error ? error.message : String(error)));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [identities.length, nativeKeysReady, profile]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(getStorageKey(BASE_IDENTITIES, profile), JSON.stringify(identities));
-    } catch (_) {}
-  }, [identities, profile]);
+    if (!isWeb() && !nativeKeysReady) return;
+    try { saveIdentityEntries(browserStorage(), getStorageKey(BASE_IDENTITIES, profile), identities); } catch (_) {}
+  }, [identities, nativeKeysReady, profile]);
   useEffect(() => {
     if (actingPubkey) {
       try { localStorage.setItem(getStorageKey(BASE_ACTING, profile), actingPubkey); } catch (_) {}
@@ -426,19 +429,18 @@ function App({ profile }: { profile: string | null }) {
   // Sync viewing to include all identities if empty
   useEffect(() => {
     if (viewingPubkeys.size === 0 && identities.length > 0) {
-      setViewingPubkeys(new Set(identities.map((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex)))));
+      setViewingPubkeys(new Set(identities.map(identityPublicKey)));
     }
   }, [identities, viewingPubkeys.size]);
   useEffect(() => {
     if (!actingPubkey && identities.length > 0) {
-      const firstPk = Nostr.getPublicKey(Nostr.hexToBytes(identities[0].privKeyHex));
+      const firstPk = identityPublicKey(identities[0]);
       setActingPubkey(firstPk);
     }
   }, [actingPubkey, identities]);
 
-  const actingIdentity = identities.find((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex)) === actingPubkey);
-  const effectivePrivKey = actingIdentity?.privKeyHex ?? identities[0]?.privKeyHex ?? getOrCreateAnonKey(profile);
-  const pubkey = Nostr.getPublicKey(Nostr.hexToBytes(effectivePrivKey));
+  const actingIdentity = identities.find((i) => identityPublicKey(i) === actingPubkey) ?? identities[0];
+  const pubkey = actingIdentity ? identityPublicKey(actingIdentity) : "";
   const selfPubkeys = Array.from(viewingPubkeys).length > 0 ? Array.from(viewingPubkeys) : [pubkey];
   const selfPubkeysKey = useMemo(() => selfPubkeys.join(","), [selfPubkeys.length, ...selfPubkeys]);
   const viewingPubkeysKey = useMemo(() => [...viewingPubkeys].join(","), [viewingPubkeys]);
@@ -448,7 +450,7 @@ function App({ profile }: { profile: string | null }) {
 
   const getIdentityLabelsForPubkey = useCallback((pk: string): string[] => {
     return identities
-      .filter((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex)) === pk)
+      .filter((i) => identityPublicKey(i) === pk)
       .map((i) => profiles[pk]?.name || i.label || pk.slice(0, 8) + "…");
   }, [identities, profiles]);
 
@@ -461,7 +463,7 @@ function App({ profile }: { profile: string | null }) {
   const myAbout = myProfile?.about ?? "";
   const myBanner = myProfile?.banner ?? null;
 
-  const ourPubkeysSet = new Set(identities.map((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex))));
+  const ourPubkeysSet = new Set(identities.map(identityPublicKey));
   let contacts = Array.from(viewingPubkeys).flatMap((pk) => {
     const kind3 = events.find((e) => e.kind === 3 && e.pubkey === pk);
     return kind3 ? kind3.tags.filter((t) => t[0] === "p").map((t) => t[1]) : [];
@@ -963,10 +965,10 @@ function App({ profile }: { profile: string | null }) {
           cached[ev.id] = "[No peer]";
           continue;
         }
-        const identityForPk = identities.find((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex)) === ourPk);
-        const privToUse = identityForPk?.privKeyHex ?? effectivePrivKey;
+        const identityForPk = identities.find((i) => identityPublicKey(i) === ourPk) ?? actingIdentity;
         try {
-          const plain = await Nostr.nip04Decrypt(ev.content, privToUse, otherPubkey);
+          if (!identityForPk) throw new Error("identity unavailable");
+          const plain = await nip04DecryptWithIdentity(identityForPk, otherPubkey, ev.content);
           if (!cancelled) cached[ev.id] = plain;
         } catch {
           if (!cancelled) cached[ev.id] = "[Decryption failed]";
@@ -978,7 +980,7 @@ function App({ profile }: { profile: string | null }) {
       }
     })();
     return () => { cancelled = true; };
-  }, [identities, effectivePrivKey, dmEventIds, selfPubkeysKey]);
+  }, [identities, actingIdentity, dmEventIds, selfPubkeysKey]);
 
   // Mark DM conversation as read when user opens it
   useEffect(() => {
@@ -1016,7 +1018,7 @@ function App({ profile }: { profile: string | null }) {
     }
   }, [view, notificationEvents, lastNotifReadAt]);
 
-  const handleAddNostrIdentity = useCallback((hexOrNsec: string) => {
+  const handleAddNostrIdentity = useCallback(async (hexOrNsec: string) => {
     const trimmed = hexOrNsec.trim();
     let privHex: string;
     if (trimmed.toLowerCase().startsWith("nsec")) {
@@ -1035,11 +1037,18 @@ function App({ profile }: { profile: string | null }) {
       return;
     }
     const pk = Nostr.getPublicKey(Nostr.hexToBytes(privHex));
-    if (identities.some((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex)) === pk)) {
+    if (identities.some((i) => identityPublicKey(i) === pk)) {
       setStatus("Identity already added");
       return;
     }
-    setIdentities((prev) => [...prev, { id: "nostr-" + pk.slice(0, 12), privKeyHex: privHex, label: pk.slice(0, 8) + "…", type: "nostr", category: "nostr" }]);
+    let material: Pick<IdentityEntry, "publicKey" | "keyHandle" | "privKeyHex">;
+    try {
+      material = await importIdentityMaterial(privHex, pk);
+    } catch (error) {
+      setStatus("Could not protect imported identity: " + (error instanceof Error ? error.message : String(error)));
+      return;
+    }
+    setIdentities((prev) => [...prev, { id: "nostr-" + pk.slice(0, 12), ...material, label: pk.slice(0, 8) + "…", type: "nostr", category: "nostr" }]);
     setActingPubkey(pk);
     setViewingPubkeys((prev) => new Set(prev).add(pk));
     setLoginFormOpen(false);
@@ -1061,19 +1070,25 @@ function App({ profile }: { profile: string | null }) {
       setStatus("Enter nsec or click Generate");
       return;
     }
-    handleAddNostrIdentity(nsec.trim());
+    void handleAddNostrIdentity(nsec.trim());
   }, [nsec, handleAddNostrIdentity]);
 
   const handleGenerate = useCallback(() => {
-    const sk = Nostr.generateSecretKey();
-    const hex = Nostr.bytesToHex(sk);
-    const pk = Nostr.getPublicKey(sk);
-    setIdentities((prev) => [...prev, { id: "local-" + pk.slice(0, 12), privKeyHex: hex, label: "Local " + (prev.length + 1), type: "local", category: "local" }]);
-    setActingPubkey(pk);
-    setViewingPubkeys((prev) => new Set(prev).add(pk));
-    setNsec(Nostr.nip19.nsecEncode(sk));
-    setStatus("New local identity created");
-    setLoginFormOpen(false);
+    void (async () => {
+      try {
+        const material = await createIdentityMaterial();
+        if (!material.publicKey) throw new Error("Identity creation returned no public key");
+        const pk = material.publicKey;
+        setIdentities((prev) => [...prev, { id: "local-" + pk.slice(0, 12), ...material, label: "Local " + (prev.length + 1), type: "local", category: "local" }]);
+        setActingPubkey(pk);
+        setViewingPubkeys((prev) => new Set(prev).add(pk));
+        setNsec("");
+        setStatus("New local identity created");
+        setLoginFormOpen(false);
+      } catch (error) {
+        setStatus("Identity creation failed: " + (error instanceof Error ? error.message : String(error)));
+      }
+    })();
   }, []);
 
   // Helper to add stego log entries (visible in UI)
@@ -1160,18 +1175,20 @@ function App({ profile }: { profile: string | null }) {
             return;
           }
           addStegoLog("STEGSTR1 header found! Decrypting...");
-          let keysToTry = identities
-            .filter((i) => viewingPubkeys.has(Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex))))
-            .map((i) => i.privKeyHex);
-          if (keysToTry.length === 0) keysToTry = [effectivePrivKey];
+          let keysToTry = identities.filter((identity) => viewingPubkeys.has(identityPublicKey(identity)));
+          if (keysToTry.length === 0 && actingIdentity) keysToTry = [actingIdentity];
           addStegoLog(`Trying ${keysToTry.length} keys...`);
           let lastErr: Error | null = null;
           jsonString = "";
           for (let ki = 0; ki < keysToTry.length; ki++) {
-            const key = keysToTry[ki];
+            const identity = keysToTry[ki];
             try {
               addStegoLog(`Trying key ${ki + 1}/${keysToTry.length}...`);
-              jsonString = await stegoCrypto.decryptPayload(bytes, key);
+              jsonString = await stegoCrypto.decryptPayloadWithNip04(
+                bytes,
+                identityPublicKey(identity),
+                (payload, sender) => nip04DecryptWithIdentity(identity, sender, payload),
+              );
               addStegoLog(`Key ${ki + 1} succeeded! JSON len: ${jsonString.length}`);
               lastErr = null;
               break;
@@ -1314,15 +1331,17 @@ function App({ profile }: { profile: string | null }) {
           logger.logAction("detect_error", "Not a Stegstr encrypted image", { path });
           return;
         }
-        let keysToTry = identities
-          .filter((i) => viewingPubkeys.has(Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex))))
-          .map((i) => i.privKeyHex);
-        if (keysToTry.length === 0) keysToTry = [effectivePrivKey];
+        let keysToTry = identities.filter((identity) => viewingPubkeys.has(identityPublicKey(identity)));
+        if (keysToTry.length === 0 && actingIdentity) keysToTry = [actingIdentity];
         let lastErr: Error | null = null;
         jsonString = "";
-        for (const key of keysToTry) {
+        for (const identity of keysToTry) {
           try {
-            jsonString = await stegoCrypto.decryptPayload(bytes, key);
+            jsonString = await stegoCrypto.decryptPayloadWithNip04(
+              bytes,
+              identityPublicKey(identity),
+              (payload, sender) => nip04DecryptWithIdentity(identity, sender, payload),
+            );
             lastErr = null;
             break;
           } catch (e) {
@@ -1405,7 +1424,7 @@ function App({ profile }: { profile: string | null }) {
       setDetecting(false);
       setStegoProgress("");
     }
-  }, [effectivePrivKey, identities, viewingPubkeys, addStegoLog]);
+  }, [actingIdentity, identities, viewingPubkeys, addStegoLog]);
 
   useEffect(() => {
     if (isWeb()) return;
@@ -1507,16 +1526,13 @@ function App({ profile }: { profile: string | null }) {
         const syntheticKind0: NostrEvent[] = [];
         for (const pk of pubkeysInEmbed) {
           if (!pk || kind0InEvents.has(pk)) continue;
-          const idForPk = identities.find((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex)) === pk);
+          const idForPk = identities.find((i) => identityPublicKey(i) === pk);
           if (!idForPk) continue;
           const prof = profiles[pk];
           if (!prof) continue;
           try {
             const content = JSON.stringify(prof);
-            const ev = await Nostr.finishEventAsync(
-              { kind: 0, content, tags: [], created_at: Math.floor(Date.now() / 1000) },
-              Nostr.hexToBytes(idForPk.privKeyHex)
-            );
+            const ev = await signEventWithIdentity(idForPk, { kind: 0, content, tags: [], created_at: Math.floor(Date.now() / 1000) });
             syntheticKind0.push(ev as NostrEvent);
           } catch (_) {}
         }
@@ -1528,16 +1544,13 @@ function App({ profile }: { profile: string | null }) {
           const synthetic: NostrEvent[] = [];
           for (const pk of pubkeysInEmbed) {
             if (!pk || kind0InEvents.has(pk)) continue;
-            const idForPk = identities.find((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex)) === pk);
+            const idForPk = identities.find((i) => identityPublicKey(i) === pk);
             if (!idForPk) continue;
             const prof = profiles[pk];
             if (!prof) continue;
             try {
               const content = JSON.stringify(prof);
-              const ev = await Nostr.finishEventAsync(
-                { kind: 0, content, tags: [], created_at: Math.floor(Date.now() / 1000) },
-                Nostr.hexToBytes(idForPk.privKeyHex)
-              );
+              const ev = await signEventWithIdentity(idForPk, { kind: 0, content, tags: [], created_at: Math.floor(Date.now() / 1000) });
               synthetic.push(ev as NostrEvent);
             } catch (_) {}
           }
@@ -1551,11 +1564,16 @@ function App({ profile }: { profile: string | null }) {
             const bundle = await buildBundle(trimmedEvents);
             const jsonString = JSON.stringify(bundle);
             addStegoLog(`Bundle: ${trimmedEvents.length} events, ${jsonString.length} bytes JSON`);
-            if (embedRecipientMode === "recipients" && embedRecipients.length > 0 && effectivePrivKey) {
-              const selfPk = Nostr.getPublicKey(Nostr.hexToBytes(effectivePrivKey));
+            if (embedRecipientMode === "recipients" && embedRecipients.length > 0 && actingIdentity) {
+              const selfPk = identityPublicKey(actingIdentity);
               const allRecipients = Array.from(new Set([selfPk, ...embedRecipients]));
               addStegoLog(`Encrypting for ${allRecipients.length} recipient(s)...`);
-              encrypted = await stegoCrypto.encryptForRecipients(jsonString, effectivePrivKey, allRecipients);
+              encrypted = await stegoCrypto.encryptForRecipientsWithNip04(
+                jsonString,
+                selfPk,
+                allRecipients,
+                (plaintext, recipient) => nip04EncryptWithIdentity(actingIdentity, recipient, plaintext),
+              );
             } else {
               addStegoLog("Encrypting for any Stegstr user...");
               encrypted = await stegoCrypto.encryptOpen(jsonString);
@@ -1710,16 +1728,13 @@ function App({ profile }: { profile: string | null }) {
         const syntheticKind0: NostrEvent[] = [];
         for (const pk of pubkeysInEmbed) {
           if (!pk || kind0InEvents.has(pk)) continue;
-          const idForPk = identities.find((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex)) === pk);
+          const idForPk = identities.find((i) => identityPublicKey(i) === pk);
           if (!idForPk) continue;
           const prof = profiles[pk];
           if (!prof) continue;
           try {
             const content = JSON.stringify(prof);
-            const ev = await Nostr.finishEventAsync(
-              { kind: 0, content, tags: [], created_at: Math.floor(Date.now() / 1000) },
-              Nostr.hexToBytes(idForPk.privKeyHex)
-            );
+            const ev = await signEventWithIdentity(idForPk, { kind: 0, content, tags: [], created_at: Math.floor(Date.now() / 1000) });
             syntheticKind0.push(ev as NostrEvent);
           } catch (_) {}
         }
@@ -1783,7 +1798,7 @@ function App({ profile }: { profile: string | null }) {
       setEmbedding(false);
       setStegoProgress("");
     }
-  }, [embedModalOpen, embedCoverFile, events, profiles, identities, addStegoLog, embedRecipientMode, embedRecipients, effectivePrivKey, embedMethod, targetPlatform]);
+  }, [embedModalOpen, embedCoverFile, events, profiles, identities, actingIdentity, addStegoLog, embedRecipientMode, embedRecipients, embedMethod, targetPlatform]);
 
   const resolvePubkeyFromInput = useCallback((input: string): string | null => {
     const s = input.trim().replace(/\s/g, "");
@@ -1800,19 +1815,12 @@ function App({ profile }: { profile: string | null }) {
 
   const handleSendDm = useCallback(
     async (theirPubkeyHex: string, content: string) => {
-      if (!effectivePrivKey || !content.trim()) return;
+      if (!actingIdentity || !content.trim()) return;
       try {
-        const encrypted = await Nostr.nip04Encrypt(content.trim(), effectivePrivKey, theirPubkeyHex);
-        const sk = Nostr.hexToBytes(effectivePrivKey);
-        const ev = await Nostr.finishEventAsync(
-          {
-            kind: 4,
-            content: encrypted,
-            tags: [["p", theirPubkeyHex]],
-            created_at: Math.floor(Date.now() / 1000),
-          },
-          sk
-        );
+        const encrypted = await nip04EncryptWithIdentity(actingIdentity, theirPubkeyHex, content.trim());
+        const ev = await signEventWithIdentity(actingIdentity, {
+          kind: 4, content: encrypted, tags: [["p", theirPubkeyHex]], created_at: Math.floor(Date.now() / 1000),
+        });
         setEvents((prev) => [ev as NostrEvent, ...prev]);
         setDmReplyContent("");
         if (canPublishToNetwork) publishViaRelay(ev as NostrEvent);
@@ -1823,51 +1831,32 @@ function App({ profile }: { profile: string | null }) {
         logger.logError("DM send failed", e, { to: theirPubkeyHex.slice(0, 8) + "…" });
       }
     },
-    [effectivePrivKey, networkEnabled, canPublishToNetwork, publishViaRelay]
+    [actingIdentity, networkEnabled, canPublishToNetwork, publishViaRelay]
   );
 
   const handlePost = useCallback(async () => {
-    if (!effectivePrivKey) return;
+    if (!actingIdentity) return;
     const textPart = newPost.trim();
     const mediaPart = postMediaUrls.length ? "\n" + postMediaUrls.join("\n") : "";
     if (!textPart && !postMediaUrls.length) return;
-    const sk = Nostr.hexToBytes(effectivePrivKey);
     const content = ensureStegstrSuffix((textPart || " ") + mediaPart);
     const tags: string[][] = postMediaUrls.flatMap((url) => [["im", url]]);
-    const ev = await Nostr.finishEventAsync(
-      {
-        kind: 1,
-        content,
-        tags,
-        created_at: Math.floor(Date.now() / 1000),
-      },
-      sk
-    );
+    const ev = await signEventWithIdentity(actingIdentity, { kind: 1, content, tags, created_at: Math.floor(Date.now() / 1000) });
     setEvents((prev) => [ev as NostrEvent, ...prev]);
     setNewPost("");
     setPostMediaUrls([]);
     if (canPublishToNetwork) publishViaRelay(ev as NostrEvent);
     setStatus("Posted");
     logger.logAction("post", "Posted note", { networkEnabled, contentLength: content.length, mediaCount: postMediaUrls.length });
-  }, [effectivePrivKey, newPost, postMediaUrls, networkEnabled, canPublishToNetwork, publishViaRelay]);
+  }, [actingIdentity, newPost, postMediaUrls, networkEnabled, canPublishToNetwork, publishViaRelay]);
 
   const handleLike = useCallback(
     async (note: NostrEvent) => {
-      if (!effectivePrivKey) return;
+      if (!actingIdentity) return;
       try {
-        const sk = Nostr.hexToBytes(effectivePrivKey);
-        const ev = await Nostr.finishEventAsync(
-          {
-            kind: 7,
-            content: "+",
-            tags: [
-              ["e", note.id],
-              ["p", note.pubkey],
-            ],
-            created_at: Math.floor(Date.now() / 1000),
-          },
-          sk
-        );
+        const ev = await signEventWithIdentity(actingIdentity, {
+          kind: 7, content: "+", tags: [["e", note.id], ["p", note.pubkey]], created_at: Math.floor(Date.now() / 1000),
+        });
         setEvents((prev) => [ev as NostrEvent, ...prev]);
         if (canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Liked");
@@ -1877,26 +1866,16 @@ function App({ profile }: { profile: string | null }) {
         logger.logError("Like failed", e, { noteId: note.id.slice(0, 8) + "…" });
       }
     },
-    [effectivePrivKey, networkEnabled, canPublishToNetwork, publishViaRelay]
+    [actingIdentity, networkEnabled, canPublishToNetwork, publishViaRelay]
   );
 
   const handleRepost = useCallback(
     async (note: NostrEvent) => {
-      if (!effectivePrivKey) return;
+      if (!actingIdentity) return;
       try {
-        const sk = Nostr.hexToBytes(effectivePrivKey);
-        const ev = await Nostr.finishEventAsync(
-          {
-            kind: 6,
-            content: JSON.stringify(note),
-            tags: [
-              ["e", note.id],
-              ["p", note.pubkey],
-            ],
-            created_at: Math.floor(Date.now() / 1000),
-          },
-          sk
-        );
+        const ev = await signEventWithIdentity(actingIdentity, {
+          kind: 6, content: JSON.stringify(note), tags: [["e", note.id], ["p", note.pubkey]], created_at: Math.floor(Date.now() / 1000),
+        });
         setEvents((prev) => [ev as NostrEvent, ...prev]);
         if (canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Reposted");
@@ -1904,25 +1883,16 @@ function App({ profile }: { profile: string | null }) {
         setStatus("Repost failed: " + (e instanceof Error ? e.message : String(e)));
       }
     },
-    [effectivePrivKey, networkEnabled, canPublishToNetwork, publishViaRelay]
+    [actingIdentity, networkEnabled, canPublishToNetwork, publishViaRelay]
   );
 
   const handleDelete = useCallback(
     async (note: NostrEvent) => {
       if (!selfPubkeys.includes(note.pubkey)) return;
-      const identityForNote = identities.find((i) => Nostr.getPublicKey(Nostr.hexToBytes(i.privKeyHex)) === note.pubkey);
-      const privToUse = identityForNote?.privKeyHex ?? effectivePrivKey;
+      const identityForNote = identities.find((i) => identityPublicKey(i) === note.pubkey) ?? actingIdentity;
+      if (!identityForNote) return;
       try {
-        const sk = Nostr.hexToBytes(privToUse);
-        const ev = await Nostr.finishEventAsync(
-          {
-            kind: 5,
-            content: "",
-            tags: [["e", note.id]],
-            created_at: Math.floor(Date.now() / 1000),
-          },
-          sk
-        );
+        const ev = await signEventWithIdentity(identityForNote, { kind: 5, content: "", tags: [["e", note.id]], created_at: Math.floor(Date.now() / 1000) });
         setEvents((prev) => [ev as NostrEvent, ...prev]);
         if (canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Note deleted");
@@ -1930,21 +1900,17 @@ function App({ profile }: { profile: string | null }) {
         setStatus("Delete failed: " + (e instanceof Error ? e.message : String(e)));
       }
     },
-    [effectivePrivKey, identities, selfPubkeys, networkEnabled, canPublishToNetwork, publishViaRelay]
+    [actingIdentity, identities, selfPubkeys, networkEnabled, canPublishToNetwork, publishViaRelay]
   );
 
   const handleBookmark = useCallback(
     async (note: NostrEvent) => {
-      if (!effectivePrivKey || !pubkey) return;
+      if (!actingIdentity || !pubkey) return;
       const existing = bookmarksEvent?.tags.filter((t) => t[0] === "e").map((t) => t[1]) ?? [];
       if (existing.includes(note.id)) return;
       try {
-        const sk = Nostr.hexToBytes(effectivePrivKey);
         const newTags = [...existing.map((id) => ["e", id] as [string, string]), ["e", note.id]];
-        const ev = await Nostr.finishEventAsync(
-          { kind: 10003, content: "", tags: newTags, created_at: Math.floor(Date.now() / 1000) },
-          sk
-        );
+        const ev = await signEventWithIdentity(actingIdentity, { kind: 10003, content: "", tags: newTags, created_at: Math.floor(Date.now() / 1000) });
         setEvents((prev) => prev.filter((e) => !(e.kind === 10003 && e.pubkey === pubkey)).concat(ev as NostrEvent).sort((a, b) => b.created_at - a.created_at));
         if (canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Bookmarked");
@@ -1952,21 +1918,17 @@ function App({ profile }: { profile: string | null }) {
         setStatus("Bookmark failed: " + (e instanceof Error ? e.message : String(e)));
       }
     },
-    [effectivePrivKey, pubkey, networkEnabled, canPublishToNetwork, bookmarksEvent, publishViaRelay]
+    [actingIdentity, pubkey, networkEnabled, canPublishToNetwork, bookmarksEvent, publishViaRelay]
   );
 
   const handleUnbookmark = useCallback(
     async (note: NostrEvent) => {
-      if (!effectivePrivKey || !pubkey) return;
+      if (!actingIdentity || !pubkey) return;
       const existing = bookmarksEvent?.tags.filter((t) => t[0] === "e").map((t) => t[1]) ?? [];
       if (!existing.includes(note.id)) return;
       try {
-        const sk = Nostr.hexToBytes(effectivePrivKey);
         const newTags = existing.filter((id) => id !== note.id).map((id) => ["e", id] as [string, string]);
-        const ev = await Nostr.finishEventAsync(
-          { kind: 10003, content: "", tags: newTags, created_at: Math.floor(Date.now() / 1000) },
-          sk
-        );
+        const ev = await signEventWithIdentity(actingIdentity, { kind: 10003, content: "", tags: newTags, created_at: Math.floor(Date.now() / 1000) });
         setEvents((prev) => prev.filter((e) => !(e.kind === 10003 && e.pubkey === pubkey)).concat(ev as NostrEvent).sort((a, b) => b.created_at - a.created_at));
         if (canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Removed from bookmarks");
@@ -1974,7 +1936,7 @@ function App({ profile }: { profile: string | null }) {
         setStatus("Unbookmark failed: " + (e instanceof Error ? e.message : String(e)));
       }
     },
-    [effectivePrivKey, pubkey, networkEnabled, canPublishToNetwork, bookmarksEvent, publishViaRelay]
+    [actingIdentity, pubkey, networkEnabled, canPublishToNetwork, bookmarksEvent, publishViaRelay]
   );
 
   const getRootId = useCallback((note: NostrEvent): string => {
@@ -1984,20 +1946,13 @@ function App({ profile }: { profile: string | null }) {
 
   const handleReply = useCallback(
     async () => {
-      if (!effectivePrivKey || !replyingTo || !replyContent.trim()) return;
+      if (!actingIdentity || !replyingTo || !replyContent.trim()) return;
       const rootId = getRootId(replyingTo);
       try {
-        const sk = Nostr.hexToBytes(effectivePrivKey);
         const tags: string[][] = [["e", rootId], ["e", replyingTo.id], ["p", replyingTo.pubkey]];
-        const ev = await Nostr.finishEventAsync(
-          {
-            kind: 1,
-            content: ensureStegstrSuffix(replyContent.trim()),
-            tags,
-            created_at: Math.floor(Date.now() / 1000),
-          },
-          sk
-        );
+        const ev = await signEventWithIdentity(actingIdentity, {
+          kind: 1, content: ensureStegstrSuffix(replyContent.trim()), tags, created_at: Math.floor(Date.now() / 1000),
+        });
         setEvents((prev) => [ev as NostrEvent, ...prev]);
         setReplyingTo(null);
         setReplyContent("");
@@ -2009,7 +1964,7 @@ function App({ profile }: { profile: string | null }) {
         logger.logError("Reply failed", e, { rootId });
       }
     },
-    [effectivePrivKey, replyingTo, replyContent, networkEnabled, canPublishToNetwork, getRootId, publishViaRelay]
+    [actingIdentity, replyingTo, replyContent, networkEnabled, canPublishToNetwork, getRootId, publishViaRelay]
   );
 
   const openZapUrl = useCallback((url: string) => {
@@ -2039,26 +1994,18 @@ function App({ profile }: { profile: string | null }) {
 
   const handleZap = useCallback(
     async (note: NostrEvent) => {
-      if (!effectivePrivKey) return;
+      if (!actingIdentity) return;
       if (!canPublishToNetwork) {
         setStatus("Zaps require a Nostr identity");
         return;
       }
       try {
-        const sk = Nostr.hexToBytes(effectivePrivKey);
-        const zapRequest = await Nostr.finishEventAsync(
-          {
-            kind: 9734,
-            content: "Zap request",
-            tags: [
-              ["e", note.id],
-              ["p", note.pubkey],
-              ["relays", ...relayUrls],
-            ],
-            created_at: Math.floor(Date.now() / 1000),
-          },
-          sk
-        );
+        const zapRequest = await signEventWithIdentity(actingIdentity, {
+          kind: 9734,
+          content: "Zap request",
+          tags: [["e", note.id], ["p", note.pubkey], ["relays", ...relayUrls]],
+          created_at: Math.floor(Date.now() / 1000),
+        });
         const zapStreamUrl = `https://zap.stream/e/${note.id}`;
         if (networkEnabled) {
           publishViaRelay(zapRequest as NostrEvent);
@@ -2079,7 +2026,7 @@ function App({ profile }: { profile: string | null }) {
         setStatus("Zap failed: " + (e instanceof Error ? e.message : String(e)));
       }
     },
-    [effectivePrivKey, networkEnabled, canPublishToNetwork, relayUrls, openZapUrl, publishViaRelay]
+    [actingIdentity, networkEnabled, canPublishToNetwork, relayUrls, openZapUrl, publishViaRelay]
   );
 
   const handleEditProfileOpen = useCallback(() => {
@@ -2091,23 +2038,14 @@ function App({ profile }: { profile: string | null }) {
   }, [myName, myAbout, myPicture, myBanner]);
 
   const handleEditProfileSave = useCallback(async () => {
-    if (!effectivePrivKey || !pubkey) return;
-    const sk = Nostr.hexToBytes(effectivePrivKey);
+    if (!actingIdentity || !pubkey) return;
     const content = JSON.stringify({
       name: editName.trim() || undefined,
       about: editAbout.trim() || undefined,
       picture: editPicture.trim() || undefined,
       banner: editBanner.trim() || undefined,
     });
-    const ev = await Nostr.finishEventAsync(
-      {
-        kind: 0,
-        content,
-        tags: [],
-        created_at: Math.floor(Date.now() / 1000),
-      },
-      sk
-    );
+    const ev = await signEventWithIdentity(actingIdentity, { kind: 0, content, tags: [], created_at: Math.floor(Date.now() / 1000) });
     setEvents((prev) => {
       const byId = new Map(prev.map((e) => [e.id, e]));
       byId.set(ev.id, ev as NostrEvent);
@@ -2128,7 +2066,7 @@ function App({ profile }: { profile: string | null }) {
     if (canPublishToNetwork && !isNostr) publishViaRelay(ev as NostrEvent);
     setStatus(isNostr ? "Profile updated (local only)" : "Profile updated");
     logger.logAction("profile_edit", isNostr ? "Profile updated (local only)" : "Profile updated", { networkEnabled, isNostr });
-  }, [effectivePrivKey, pubkey, editName, editAbout, editPicture, editBanner, networkEnabled, canPublishToNetwork, actingIdentity?.type, publishViaRelay]);
+  }, [actingIdentity, pubkey, editName, editAbout, editPicture, editBanner, networkEnabled, canPublishToNetwork, publishViaRelay]);
 
   const handlePostMediaUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -2156,7 +2094,7 @@ function App({ profile }: { profile: string | null }) {
 
   const handleFollow = useCallback(
     async (theirPk: string) => {
-      if (!effectivePrivKey || !pubkey) return;
+      if (!actingIdentity || !pubkey) return;
       const kind3 = events.find((e) => e.kind === 3 && e.pubkey === pubkey);
       const existingTags = kind3 ? kind3.tags.filter((t) => t[0] === "p") : [];
       if (existingTags.some((t) => t[1] === theirPk)) {
@@ -2164,12 +2102,8 @@ function App({ profile }: { profile: string | null }) {
         return;
       }
       try {
-        const sk = Nostr.hexToBytes(effectivePrivKey);
         const newTags = [...existingTags.map((t) => ["p", t[1]]), ["p", theirPk]];
-        const ev = await Nostr.finishEventAsync(
-          { kind: 3, content: kind3?.content ?? "", tags: newTags, created_at: Math.floor(Date.now() / 1000) },
-          sk
-        );
+        const ev = await signEventWithIdentity(actingIdentity, { kind: 3, content: kind3?.content ?? "", tags: newTags, created_at: Math.floor(Date.now() / 1000) });
         setEvents((prev) => prev.filter((e) => !(e.kind === 3 && e.pubkey === pubkey)).concat(ev as NostrEvent).sort((a, b) => b.created_at - a.created_at));
         if (canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Following");
@@ -2179,21 +2113,17 @@ function App({ profile }: { profile: string | null }) {
         logger.logError("Follow failed", e, { theirPk: theirPk.slice(0, 8) + "…" });
       }
     },
-    [effectivePrivKey, pubkey, events, networkEnabled, canPublishToNetwork, publishViaRelay]
+    [actingIdentity, pubkey, events, networkEnabled, canPublishToNetwork, publishViaRelay]
   );
 
   const handleUnfollow = useCallback(
     async (theirPk: string) => {
-      if (!effectivePrivKey || !pubkey) return;
+      if (!actingIdentity || !pubkey) return;
       const kind3 = events.find((e) => e.kind === 3 && e.pubkey === pubkey);
       if (!kind3) return;
       const newTags = kind3.tags.filter((t) => t[0] !== "p" || t[1] !== theirPk);
       try {
-        const sk = Nostr.hexToBytes(effectivePrivKey);
-        const ev = await Nostr.finishEventAsync(
-          { kind: 3, content: kind3.content, tags: newTags, created_at: Math.floor(Date.now() / 1000) },
-          sk
-        );
+        const ev = await signEventWithIdentity(actingIdentity, { kind: 3, content: kind3.content, tags: newTags, created_at: Math.floor(Date.now() / 1000) });
         setEvents((prev) => prev.filter((e) => !(e.kind === 3 && e.pubkey === pubkey)).concat(ev as NostrEvent).sort((a, b) => b.created_at - a.created_at));
         if (canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Unfollowed");
@@ -2201,14 +2131,15 @@ function App({ profile }: { profile: string | null }) {
         setStatus("Unfollow failed: " + (e instanceof Error ? e.message : String(e)));
       }
     },
-    [effectivePrivKey, pubkey, events, networkEnabled, canPublishToNetwork, publishViaRelay]
+    [actingIdentity, pubkey, events, networkEnabled, canPublishToNetwork, publishViaRelay]
   );
 
   useEffect(() => {
     if (!actingIdentity || actingIdentity.type !== "nostr" || actingIdentity.category !== "nostr" || hasSyncedAnonRef.current) return;
     hasSyncedAnonRef.current = true;
-    const sk = Nostr.hexToBytes(actingIdentity.privKeyHex);
-    const anonPubkey = Nostr.getPublicKey(Nostr.hexToBytes(getOrCreateAnonKey(profile)));
+    const localIdentity = identities.find((identity) => identity.type === "local");
+    if (!localIdentity) return;
+    const anonPubkey = identityPublicKey(localIdentity);
     let cancelled = false;
     (async () => {
       const anonEvents = events.filter((e) => e.pubkey === anonPubkey);
@@ -2218,10 +2149,7 @@ function App({ profile }: { profile: string | null }) {
         if (cancelled) return;
         try {
           const content = ev.kind === 1 ? ensureStegstrSuffix(ev.content) : ev.content;
-          const newEv = await Nostr.finishEventAsync(
-            { kind: ev.kind, content, tags: ev.tags, created_at: ev.created_at },
-            sk
-          );
+          const newEv = await signEventWithIdentity(actingIdentity, { kind: ev.kind, content, tags: ev.tags, created_at: ev.created_at });
           publishViaRelay(newEv as NostrEvent);
           newEvents.push(newEv as NostrEvent);
         } catch (_) {}
@@ -2235,7 +2163,7 @@ function App({ profile }: { profile: string | null }) {
       }
     })();
     return () => { cancelled = true; };
-  }, [actingIdentity, events, profile, publishViaRelay]);
+  }, [actingIdentity, identities, events, publishViaRelay]);
 
   // --- Shared NoteCard state & actions ---
   const noteCardState: NoteCardState = useMemo(() => ({

@@ -31,11 +31,15 @@ serde_json = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
 base64 = "0.22"
 aes-gcm = "0.10"
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc", "block-padding"] }
 aead = "0.5"
 sha2 = "0.10"
 rand = "0.8"
 secp256k1 = { version = "0.28", features = ["rand-std"] }
 hex = "0.4"
+keyring = { version = "4.1.6", default-features = false, features = ["v1"] }
+zeroize = "1.8"
 flate2 = "1.1"
 crc32fast = "1"
 reed-solomon-erasure = "6"
