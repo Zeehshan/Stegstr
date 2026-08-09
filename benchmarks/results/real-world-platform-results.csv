@@ -1,1 +1,9 @@
 platform,platform_mode,test_id,carrier,payload_size,source_width,source_height,received_width,received_height,source_file_size,received_file_size,source_format,received_format,decode_success,exact_match,pilot_confidence,decode_time,error
+whatsapp,normal-image,rw-normal-photo-32b,normal-photo,32,1280,720,1280,720,775866,383381,jpeg,jpeg,true,false,1,31.387041999999997,PASS
+whatsapp,normal-image,rw-normal-photo-128b,normal-photo,128,1280,720,1280,720,781823,383381,jpeg,jpeg,true,false,1,27.386042,PASS
+whatsapp,normal-image,rw-detailed-photo-32b,detailed-photo,32,1920,1080,1280,720,1195382,383381,jpeg,jpeg,true,false,1,26.586292,PASS
+whatsapp,normal-image,rw-detailed-photo-128b,detailed-photo,128,1920,1080,1280,720,1220837,383381,jpeg,jpeg,true,false,1,27.327917,PASS
+whatsapp,normal-image,rw-bright-photo-128b,bright-photo,128,1280,720,1280,720,870876,384812,jpeg,jpeg,true,true,1,27.135958000000002,
+whatsapp,normal-image,rw-bright-photo-32b,bright-photo,32,1280,720,1280,720,867260,383381,jpeg,jpeg,true,true,1,25.40825,
+whatsapp,normal-image,rw-low-detail-photo-32b,low-detail-photo,32,1280,720,1280,720,317726,136320,jpeg,jpeg,true,true,1,21.600458999999997,
+whatsapp,normal-image,rw-low-detail-photo-128b,low-detail-photo,128,1280,720,1280,720,348366,152079,jpeg,jpeg,true,true,1,25.179833,
