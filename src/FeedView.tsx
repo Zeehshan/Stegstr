@@ -35,6 +35,8 @@ export interface FeedViewProps {
   pubkey: string | null;
   // Focus
   focusedNoteId: string | null;
+  prioritizedEventIds: string[];
+  feedSectionRef: React.RefObject<HTMLElement | null>;
   notes: NostrEvent[];
   // Note rendering
   getRepliesTo: (noteId: string) => NostrEvent[];
@@ -60,7 +62,7 @@ export function FeedView({
   notesEmpty, feedItems,
   searchTrim, searchLower, searchNoSpaces, searchPubkeyHex, npubStr, networkEnabled,
   profiles, pubkey,
-  focusedNoteId, notes,
+  focusedNoteId, prioritizedEventIds, feedSectionRef, notes,
   getRepliesTo, noteCardState, noteCardActions,
   replyingTo, replyContent, onReplyContentChange, handleReply, handleReplyCancel,
   loadingMore, loadMoreSentinelRef,
@@ -106,7 +108,7 @@ export function FeedView({
         </div>
       </section>
 
-      <section className="feed-section">
+      <section className="feed-section" ref={feedSectionRef}>
         <div className="feed-header-row">
           <h2 className="feed-title">Feed</h2>
           <div className="feed-filter-tabs">
@@ -183,9 +185,17 @@ export function FeedView({
                   return focusedNoteId;
                 })()
               : null;
-            const feedItemsSorted: FeedItem[] = !rootIdForFocus
+            const priorityIndex = new Map(prioritizedEventIds.map((id, index) => [id, index]));
+            const itemPriority = (item: FeedItem): number => {
+              const ids = item.type === "repost" ? [item.repost.id, item.note.id] : [item.note.id];
+              return Math.min(...ids.map((id) => priorityIndex.get(id) ?? Number.MAX_SAFE_INTEGER));
+            };
+            const feedItemsSorted: FeedItem[] = !rootIdForFocus && prioritizedEventIds.length === 0
               ? feedItems
               : [...feedItems].sort((a, b) => {
+                  const aPriority = itemPriority(a);
+                  const bPriority = itemPriority(b);
+                  if (aPriority !== bPriority) return aPriority - bPriority;
                   const aId = a.type === "note" ? a.note.id : a.note.id;
                   const bId = b.type === "note" ? b.note.id : b.note.id;
                   if (aId === rootIdForFocus) return -1;
@@ -196,6 +206,7 @@ export function FeedView({
               const ev = item.type === "note" ? item.note : item.note;
               const replies = getRepliesTo(ev.id).sort((a, b) => a.created_at - b.created_at);
               const isFocused = !!(rootIdForFocus && ev.id === rootIdForFocus);
+              const isDetected = prioritizedEventIds.includes(ev.id) || (item.type === "repost" && prioritizedEventIds.includes(item.repost.id));
               return (
                 <NoteThread
                   key={item.type === "repost" ? item.repost.id : ev.id}
@@ -205,6 +216,7 @@ export function FeedView({
                   replies={replies}
                   repostEvent={item.type === "repost" ? item.repost : undefined}
                   isFocused={isFocused}
+                  isDetected={isDetected}
                   showReplyActions={true}
                   replyingTo={replyingTo}
                   replyContent={replyContent}

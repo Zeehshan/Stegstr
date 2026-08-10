@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import * as Nostr from "../nostr-stub";
-import { calculateEventId, mergeNostrEvents, validateNostrEvent } from "../nostr-events";
+import {
+  calculateEventId,
+  isEventHiddenByDeletion,
+  mergeImportedEventIds,
+  mergeNostrEvents,
+  summarizeImportedEvents,
+  validateNostrEvent,
+} from "../nostr-events";
 import { loadCachedNostrState, saveCachedNostrState, type StorageLike } from "../nostr-persistence";
 import type { NostrEvent } from "../types";
 
@@ -59,6 +66,43 @@ describe("deduplication and replaceable events", () => {
     const first = await event(30_001, 100, "a", [["d", "a"]]);
     const second = await event(30_001, 101, "b", [["d", "b"]]);
     expect(mergeNostrEvents([], [first, second])).toHaveLength(2);
+  });
+});
+
+describe("image-import visibility", () => {
+  it("restores a note hidden by a stale local deletion while honoring a deletion contained in the image", async () => {
+    const recovered = await event(1, 300, "recovered");
+    const deletedInImage = await event(1, 200, "deleted in image");
+    const bundledDeletion = await event(5, 250, "", [["e", deletedInImage.id]]);
+    const staleLocalDeletion = await event(5, 350, "", [["e", recovered.id]]);
+
+    const importedIds = mergeImportedEventIds(new Set(), [recovered, bundledDeletion, deletedInImage]);
+    const deletedIds = new Set(
+      [staleLocalDeletion, bundledDeletion].flatMap((deletion) =>
+        deletion.tags.filter((tag) => tag[0] === "e").map((tag) => tag[1]),
+      ),
+    );
+
+    expect(isEventHiddenByDeletion(recovered.id, deletedIds, importedIds)).toBe(false);
+    expect(isEventHiddenByDeletion(deletedInImage.id, deletedIds, importedIds)).toBe(true);
+  });
+
+  it("restores visibility when a network-known event is detected after network cleanup", async () => {
+    const recovered = await event(1, 300, "received over network, then recovered from image");
+    const eventsAfterNetworkOn = mergeNostrEvents([], [recovered]);
+    const eventsAfterNetworkOff = [...eventsAfterNetworkOn];
+    const summary = summarizeImportedEvents(eventsAfterNetworkOff, [recovered]);
+    const merged = mergeNostrEvents(eventsAfterNetworkOff, [recovered]);
+    const importedIds = mergeImportedEventIds(new Set(), [recovered]);
+
+    expect(summary).toEqual({ validCount: 1, newCount: 0, knownCount: 1, noteCount: 1 });
+    expect(merged).toEqual([recovered]);
+    expect(importedIds.has(recovered.id)).toBe(true);
+    expect(isEventHiddenByDeletion(recovered.id, new Set(), importedIds)).toBe(false);
+  });
+
+  it("distinguishes an empty decoded bundle from a duplicate import", () => {
+    expect(summarizeImportedEvents([], [])).toEqual({ validCount: 0, newCount: 0, knownCount: 0, noteCount: 0 });
   });
 });
 

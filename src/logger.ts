@@ -8,6 +8,7 @@ type LogLevel = "info" | "warn" | "error" | "action";
 type LogAction =
   | "detect_started"
   | "detect_completed"
+  | "detect_empty"
   | "detect_error"
   | "detect_cancelled"
   | "embed_started"

@@ -85,6 +85,29 @@ describe("relay configuration", () => {
 });
 
 describe("RelayManager connection lifecycle", () => {
+  it("preserves the browser receiver for default timeout scheduling", () => {
+    const delegatedSetTimeout = globalThis.setTimeout.bind(globalThis);
+    const delegatedClearTimeout = globalThis.clearTimeout.bind(globalThis);
+    const receiverSensitiveSetTimeout = function (
+      this: unknown,
+      callback: (...args: unknown[]) => void,
+      delay?: number,
+    ) {
+      if (this !== globalThis) throw new TypeError("Can only call Window.setTimeout on instances of Window");
+      return delegatedSetTimeout(callback, delay);
+    } as typeof setTimeout;
+    const receiverSensitiveClearTimeout = function (this: unknown, timer: ReturnType<typeof setTimeout>) {
+      if (this !== globalThis) throw new TypeError("Can only call Window.clearTimeout on instances of Window");
+      return delegatedClearTimeout(timer);
+    } as typeof clearTimeout;
+    vi.stubGlobal("setTimeout", receiverSensitiveSetTimeout);
+    vi.stubGlobal("clearTimeout", receiverSensitiveClearTimeout);
+
+    const { manager } = harness();
+    expect(manager.snapshot().relays[0].state).toBe("Connecting");
+    expect(() => manager.close()).not.toThrow();
+  });
+
   it("accepts only normalized WebSocket relay URLs", () => {
     expect(normalizeRelayUrl(" WSS://Relay.Example/ ")).toBe("wss://relay.example");
     expect(normalizeRelayUrl("https://relay.example")).toBeNull();

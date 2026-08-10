@@ -98,6 +98,61 @@ export function mergeNostrEvents(existing: NostrEvent[], incoming: NostrEvent[],
   return [...byId.values()].sort((a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id)).slice(0, maxEvents);
 }
 
+/**
+ * Tracks events explicitly restored from an image. A deletion included in the
+ * same image remains authoritative, while an older local tombstone must not
+ * prevent a recovered event from being shown immediately.
+ */
+export function mergeImportedEventIds(
+  existing: ReadonlySet<string>,
+  imported: NostrEvent[],
+  maxEvents = NOSTR_LIMITS.cachedEvents,
+): Set<string> {
+  const next = new Set(existing);
+  for (const event of imported) next.add(event.id);
+  for (const event of imported) {
+    if (event.kind !== 5) continue;
+    for (const tag of event.tags) {
+      if (tag[0] === "e" && tag[1]) next.delete(tag[1]);
+    }
+  }
+  while (next.size > maxEvents) {
+    const oldest = next.values().next().value as string | undefined;
+    if (oldest === undefined) break;
+    next.delete(oldest);
+  }
+  return next;
+}
+
+export function isEventHiddenByDeletion(
+  eventId: string,
+  deletedEventIds: ReadonlySet<string>,
+  importedEventIds: ReadonlySet<string>,
+): boolean {
+  return deletedEventIds.has(eventId) && !importedEventIds.has(eventId);
+}
+
+export function summarizeImportedEvents(existing: NostrEvent[], imported: NostrEvent[]): {
+  validCount: number;
+  newCount: number;
+  knownCount: number;
+  noteCount: number;
+} {
+  const existingIds = new Set(existing.map((event) => event.id));
+  const seen = new Set<string>();
+  let newCount = 0;
+  let knownCount = 0;
+  let noteCount = 0;
+  for (const event of imported) {
+    if (seen.has(event.id)) continue;
+    seen.add(event.id);
+    if (existingIds.has(event.id)) knownCount += 1;
+    else newCount += 1;
+    if (event.kind === 1) noteCount += 1;
+  }
+  return { validCount: seen.size, newCount, knownCount, noteCount };
+}
+
 function hexToBytes(hex: string): Uint8Array {
   return Uint8Array.from(hex.match(/.{2}/g) ?? [], (byte) => Number.parseInt(byte, 16));
 }

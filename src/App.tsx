@@ -4,7 +4,14 @@ import { isWeb, pickImageFile, decodeStegoFile, encodeStegoToBlob, downloadBlob 
 import { getDotCapacityForFile } from "./stego-dot-web";
 import { getTauri } from "./platform-desktop";
 import { connectRelays, DEFAULT_RELAYS, getRelayUrls, queueEventForOutbox } from "./relay";
-import { mergeNostrEvents, NOSTR_LIMITS } from "./nostr-events";
+import {
+  isEventHiddenByDeletion,
+  mergeImportedEventIds,
+  mergeNostrEvents,
+  NOSTR_LIMITS,
+  summarizeImportedEvents,
+  validateNostrEvent,
+} from "./nostr-events";
 import { browserStorage, loadCachedNostrState, saveCachedNostrState } from "./nostr-persistence";
 import { uint8ArrayToBase64 } from "./utils";
 import {
@@ -37,6 +44,12 @@ import type { StegoMethod } from "./EmbedModal";
 import { EditProfileModal } from "./EditProfileModal";
 import { LoginModal } from "./LoginModal";
 import { NewMessageModal } from "./NewMessageModal";
+import {
+  DetectedContentModal,
+  detectedFeedEventIds,
+  emptyDetectionMessage,
+  type DetectedContentResult,
+} from "./DetectedContentModal";
 import type { NostrEvent, NostrStateBundle, IdentityEntry, View, ProfileData } from "./types";
 import {
   createIdentityMaterial,
@@ -266,10 +279,14 @@ function App({ profile }: { profile: string | null }) {
   const [embedding, setEmbedding] = useState(false);
   const [stegoProgress, setStegoProgress] = useState("");
   const [stegoLogs, setStegoLogs] = useState<string[]>([]);
+  const [detectedContent, setDetectedContent] = useState<DetectedContentResult | null>(null);
+  const [prioritizedDetectedEventIds, setPrioritizedDetectedEventIds] = useState<string[]>([]);
   const [dragOverStego, setDragOverStego] = useState(false);
   const [queuedZaps, setQueuedZaps] = useState<QueuedZap[]>(() => loadQueuedZaps(profile));
   const relayRef = useRef<ReturnType<typeof connectRelays> | null>(null);
   const loadMoreSentinelRef = useRef<HTMLDivElement | null>(null);
+  const feedSectionRef = useRef<HTMLElement | null>(null);
+  const detectedPriorityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const postMediaInputRef = useRef<HTMLInputElement | null>(null);
   const loadingMoreRef = useRef(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -277,6 +294,10 @@ function App({ profile }: { profile: string | null }) {
   const eventsRef = useRef(events);
   eventsRef.current = events;
   const FLUSH_MS = 120;
+
+  useEffect(() => () => {
+    if (detectedPriorityTimerRef.current !== null) globalThis.clearTimeout(detectedPriorityTimerRef.current);
+  }, []);
 
   useEffect(() => {
     try {
@@ -497,7 +518,7 @@ function App({ profile }: { profile: string | null }) {
   const rootNotes = notes
     .filter((n) => {
       const eTag = n.tags.find((t) => t[0] === "e");
-      return (!eTag || !noteIds.has(eTag[1])) && !deletedNoteIds.has(n.id);
+      return (!eTag || !noteIds.has(eTag[1])) && !isEventHiddenByDeletion(n.id, deletedNoteIds, importedEventIds);
     });
   const getRepliesTo = (noteId: string) =>
     notes.filter((n) => n.tags.find((t) => t[0] === "e" && t[1] === noteId));
@@ -1101,6 +1122,7 @@ function App({ profile }: { profile: string | null }) {
   const handleLoadFromImage = useCallback(async (providedPathOrFile?: string | File | null) => {
     setDecodeError("");
     setStegoLogs([]);
+    setDetectedContent(null);
     if (isWeb()) {
       let file: File | null;
       if (providedPathOrFile instanceof File) {
@@ -1229,29 +1251,66 @@ function App({ profile }: { profile: string | null }) {
           kind: typeof e.kind === "number" ? e.kind : parseInt(String(e.kind), 10) || 1,
           created_at: typeof e.created_at === "number" ? e.created_at : Math.floor(Date.now() / 1000),
         }));
+        const validEvents = normalized.flatMap((event) => {
+          const validation = validateNostrEvent(event);
+          return validation.ok ? [validation.event] : [];
+        });
+        const importSummary = summarizeImportedEvents(eventsRef.current, validEvents);
+        const invalidCount = normalized.length - validEvents.length;
+        addStegoLog(
+          `Parsed ${normalized.length} event record(s): ${importSummary.validCount} valid, ${invalidCount} invalid; ` +
+          `${importSummary.newCount} new, ${importSummary.knownCount} already known, ${importSummary.noteCount} note(s).`,
+        );
+        if (validEvents.length === 0) {
+          setView("feed");
+          setFeedFilter("global");
+          setSearchQuery("");
+          const message = emptyDetectionMessage(normalized.length);
+          setStatus("");
+          setDecodeError(message);
+          addStegoLog(`NO CONTENT - ${message} Feed unchanged.`);
+          logger.logAction("detect_empty", message, {
+            name: file.name,
+            parsedCount: normalized.length,
+            validCount: validEvents.length,
+            invalidCount,
+          });
+          return;
+        }
         setEvents((prev) => {
           const byId = new Map(prev.map((e) => [e.id, e]));
-          normalized.forEach((e) => byId.set(e.id, e));
+          validEvents.forEach((e) => byId.set(e.id, e));
           return Array.from(byId.values()).sort((a, b) => b.created_at - a.created_at);
         });
         const profileUpdates: Record<string, ProfileData> = {};
-        bundle.events.filter((e) => e.kind === 0).forEach((e) => {
+        validEvents.filter((e) => e.kind === 0).forEach((e) => {
           try {
             const c = JSON.parse(e.content) as { name?: string; display_name?: string; about?: string; picture?: string; banner?: string; nip05?: string };
             profileUpdates[e.pubkey] = { name: c.name ?? c.display_name, about: c.about, picture: c.picture, banner: c.banner, nip05: c.nip05 };
           } catch (_) {}
         });
         if (Object.keys(profileUpdates).length > 0) setProfiles((p) => ({ ...p, ...profileUpdates }));
-        setImportedEventIds((prev) => {
-          const next = new Set(prev);
-          bundle.events.forEach((e) => next.add(e.id));
-          if (next.size > 2000) return new Set([...next].slice(-2000));
-          return next;
+        setImportedEventIds((prev) => mergeImportedEventIds(prev, validEvents));
+        setDetectedContent({
+          events: validEvents,
+          newCount: importSummary.newCount,
+          knownCount: importSummary.knownCount,
         });
         setDecodeError("");
-        setStatus(`Loaded ${bundle.events.length} events from image.`);
-        addStegoLog(`SUCCESS - Loaded ${bundle.events.length} events!`);
-        logger.logAction("detect_completed", `Loaded ${bundle.events.length} events`, { name: file.name, eventCount: bundle.events.length });
+        setStatus(`Restored ${importSummary.validCount} event(s): ${importSummary.newCount} new, ${importSummary.knownCount} already known.`);
+        addStegoLog(
+          `SUCCESS - Restored ${importSummary.validCount} valid event(s): ` +
+          `${importSummary.newCount} new, ${importSummary.knownCount} already known.`,
+        );
+        logger.logAction("detect_completed", `Restored ${importSummary.validCount} valid events`, {
+          name: file.name,
+          parsedCount: normalized.length,
+          validCount: importSummary.validCount,
+          invalidCount,
+          newCount: importSummary.newCount,
+          knownCount: importSummary.knownCount,
+          noteCount: importSummary.noteCount,
+        });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         console.error("[App] Detect error:", e);
@@ -1294,22 +1353,26 @@ function App({ profile }: { profile: string | null }) {
     try {
       const isJpeg = /\.jpe?g$/i.test(path);
       let result: { ok: boolean; payload?: string; error?: string };
+      let decodedWith: "Robust-v2" | "Dot" | "QIM" | "DWT" = "Robust-v2";
       setStegoProgress("Extracting hidden data (robust-v2 decode)...");
       addStegoLog("Running robust-v2 steganography decode...");
       result = await tauri.invoke<{ ok: boolean; payload?: string; error?: string }>("decode_stego_robust_v2", { path });
       if (!result.ok) {
         addStegoLog(`Robust-v2 decode failed: ${result.error ?? "unknown error"}`);
         setStegoProgress("Trying legacy Dot decode...");
+        decodedWith = "Dot";
         result = await tauri.invoke<{ ok: boolean; payload?: string; error?: string }>("decode_stego_dot", { path });
       }
       if (!result.ok) {
         addStegoLog(`Dot decode failed: ${result.error ?? "unknown error"}`);
         if (isJpeg) {
+          decodedWith = "QIM";
           addStegoLog("Falling back to QIM decode (JPEG)...");
           console.log("[Detect] JPEG: falling back to QIM decode:", path);
           result = await tauri.invoke<{ ok: boolean; payload?: string; error?: string }>("decode_stego_qim", { path });
           console.log("[Detect] QIM result: ok=", result.ok, "error=", result.error ?? "(none)", "payloadLen=", result.payload?.length ?? 0);
         } else {
+          decodedWith = "DWT";
           addStegoLog("Falling back to DWT decode (PNG/other)...");
           console.log("[Detect] PNG/other: falling back to DWT decode:", path);
           result = await tauri.invoke<{ ok: boolean; payload?: string; error?: string }>("decode_stego_image", { path });
@@ -1323,7 +1386,7 @@ function App({ profile }: { profile: string | null }) {
         logger.logAction("detect_error", err, { path });
         return;
       }
-      addStegoLog(`Dot decode OK! Payload: ${result.payload.length} chars`);
+      addStegoLog(`${decodedWith} decode OK! Payload: ${result.payload.length} chars`);
       let jsonString: string;
       const raw = result.payload;
       if (raw.startsWith("base64:")) {
@@ -1377,13 +1440,39 @@ function App({ profile }: { profile: string | null }) {
         kind: typeof e.kind === "number" ? e.kind : parseInt(String(e.kind), 10) || 1,
         created_at: typeof e.created_at === "number" ? e.created_at : Math.floor(Date.now() / 1000),
       }));
+      const validEvents = normalized.flatMap((event) => {
+        const validation = validateNostrEvent(event);
+        return validation.ok ? [validation.event] : [];
+      });
+      const importSummary = summarizeImportedEvents(eventsRef.current, validEvents);
+      const invalidCount = normalized.length - validEvents.length;
+      addStegoLog(
+        `Parsed ${normalized.length} event record(s): ${importSummary.validCount} valid, ${invalidCount} invalid; ` +
+        `${importSummary.newCount} new, ${importSummary.knownCount} already known, ${importSummary.noteCount} note(s).`,
+      );
+      if (validEvents.length === 0) {
+        setView("feed");
+        setFeedFilter("global");
+        setSearchQuery("");
+        const message = emptyDetectionMessage(normalized.length);
+        setStatus("");
+        setDecodeError(message);
+        addStegoLog(`NO CONTENT - ${message} Feed unchanged.`);
+        logger.logAction("detect_empty", message, {
+          path,
+          parsedCount: normalized.length,
+          validCount: validEvents.length,
+          invalidCount,
+        });
+        return;
+      }
       setEvents((prev) => {
         const byId = new Map(prev.map((e) => [e.id, e]));
-        normalized.forEach((e) => byId.set(e.id, e));
+        validEvents.forEach((e) => byId.set(e.id, e));
         return Array.from(byId.values()).sort((a, b) => b.created_at - a.created_at);
       });
       const profileUpdates: Record<string, ProfileData> = {};
-      bundle.events.filter((e) => e.kind === 0).forEach((e) => {
+      validEvents.filter((e) => e.kind === 0).forEach((e) => {
         try {
           const raw = JSON.parse(e.content) as { name?: string; display_name?: string; about?: string; picture?: string; banner?: string; nip05?: string };
           profileUpdates[e.pubkey] = {
@@ -1398,22 +1487,26 @@ function App({ profile }: { profile: string | null }) {
       if (Object.keys(profileUpdates).length > 0) {
         setProfiles((p) => ({ ...p, ...profileUpdates }));
       }
-      setImportedEventIds((prev) => {
-        const next = new Set(prev);
-        bundle.events.forEach((e) => next.add(e.id));
-        if (next.size > 2000) {
-          const arr = [...next];
-          arr.splice(0, arr.length - 2000);
-          return new Set(arr);
-        }
-        return next;
+      setImportedEventIds((prev) => mergeImportedEventIds(prev, validEvents));
+      setDetectedContent({
+        events: validEvents,
+        newCount: importSummary.newCount,
+        knownCount: importSummary.knownCount,
       });
-      setView("feed");
-      setFeedFilter("global");
-      setSearchQuery("");
-      setStatus(`Loaded ${bundle.events.length} events`);
-      addStegoLog(`SUCCESS - Loaded ${bundle.events.length} events!`);
-      logger.logAction("detect_completed", `Loaded ${bundle.events.length} events`, { path, eventCount: bundle.events.length });
+      setStatus(`Restored ${importSummary.validCount} event(s): ${importSummary.newCount} new, ${importSummary.knownCount} already known.`);
+      addStegoLog(
+        `SUCCESS - Restored ${importSummary.validCount} valid event(s): ` +
+        `${importSummary.newCount} new, ${importSummary.knownCount} already known.`,
+      );
+      logger.logAction("detect_completed", `Restored ${importSummary.validCount} valid events`, {
+        path,
+        parsedCount: normalized.length,
+        validCount: importSummary.validCount,
+        invalidCount,
+        newCount: importSummary.newCount,
+        knownCount: importSummary.knownCount,
+        noteCount: importSummary.noteCount,
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       const isTauriBridgeError = /undefined.*invoke|__TAURI_INTERNALS__/i.test(String(msg));
@@ -1905,6 +1998,12 @@ function App({ profile }: { profile: string | null }) {
       try {
         const ev = await signEventWithIdentity(identityForNote, { kind: 5, content: "", tags: [["e", note.id]], created_at: Math.floor(Date.now() / 1000) });
         setEvents((prev) => [ev as NostrEvent, ...prev]);
+        setImportedEventIds((prev) => {
+          if (!prev.has(note.id)) return prev;
+          const next = new Set(prev);
+          next.delete(note.id);
+          return next;
+        });
         if (canPublishToNetwork) publishViaRelay(ev as NostrEvent);
         setStatus("Note deleted");
       } catch (e) {
@@ -2211,6 +2310,27 @@ function App({ profile }: { profile: string | null }) {
 
   const handleReplyCancel = useCallback(() => { setReplyingTo(null); setReplyContent(""); }, []);
 
+  const handleViewDetectedInFeed = useCallback(() => {
+    if (!detectedContent) return;
+    const feedEventIds = detectedFeedEventIds(detectedContent.events);
+    setDetectedContent(null);
+    setView("feed");
+    setFeedFilter("global");
+    setSearchQuery("");
+    setFocusedNoteId(null);
+    setPrioritizedDetectedEventIds(feedEventIds);
+    if (detectedPriorityTimerRef.current !== null) globalThis.clearTimeout(detectedPriorityTimerRef.current);
+    globalThis.setTimeout(() => {
+      const detected = feedSectionRef.current?.querySelector<HTMLElement>(".note-thread.detected");
+      (detected ?? feedSectionRef.current)?.scrollIntoView({ behavior: "smooth", block: detected ? "center" : "start" });
+      detected?.focus({ preventScroll: true });
+    }, 0);
+    detectedPriorityTimerRef.current = globalThis.setTimeout(() => {
+      setPrioritizedDetectedEventIds([]);
+      detectedPriorityTimerRef.current = null;
+    }, 8_000);
+  }, [detectedContent]);
+
   return (
     <main className="app-root primal-layout">
       <header className="top-header">
@@ -2372,6 +2492,8 @@ function App({ profile }: { profile: string | null }) {
               profiles={profiles}
               pubkey={pubkey}
               focusedNoteId={focusedNoteId}
+              prioritizedEventIds={prioritizedDetectedEventIds}
+              feedSectionRef={feedSectionRef}
               notes={notes}
               getRepliesTo={getRepliesTo}
               noteCardState={noteCardState}
@@ -2657,6 +2779,15 @@ function App({ profile }: { profile: string | null }) {
           onEditPictureChange={setEditPicture}
           editBanner={editBanner}
           onEditBannerChange={setEditBanner}
+        />
+      )}
+
+      {detectedContent && (
+        <DetectedContentModal
+          result={detectedContent}
+          profiles={profiles}
+          onClose={() => setDetectedContent(null)}
+          onViewInFeed={handleViewDetectedInFeed}
         />
       )}
 

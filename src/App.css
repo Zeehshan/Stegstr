@@ -700,6 +700,7 @@ textarea { resize: vertical; min-height: 60px; }
 .event-content { margin: 0.5rem 0 0; white-space: pre-wrap; word-break: break-word; }
 .notification-item .view-post-link { display: inline-block; margin-top: 0.5rem; font-size: 0.85rem; }
 .note-thread.focused { outline: 2px solid #111; outline-offset: 2px; border-radius: 10px; }
+.note-thread.detected { outline: 3px solid #7a5cff; outline-offset: 3px; border-radius: 10px; background: rgba(122, 92, 255, 0.08); }
 .repost-label { margin: 0 0 0.25rem; font-size: 0.85rem; }
 
 /* Search profile results */
@@ -738,6 +739,13 @@ textarea { resize: vertical; min-height: 60px; }
 .modal label { display: block; margin-bottom: 0.75rem; font-size: 0.9rem; }
 .modal label input, .modal label textarea { margin-top: 0.25rem; }
 .modal-actions { justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; display: flex; }
+.detected-content-modal { max-width: 560px; }
+.detected-content-list { max-height: min(50vh, 420px); overflow-y: auto; display: grid; gap: 0.65rem; margin-top: 0.75rem; padding-right: 0.25rem; }
+.detected-content-item { border: 1px solid #ddd; border-radius: 8px; padding: 0.75rem; background: #fafafa; }
+.detected-content-item p { margin: 0.5rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.detected-content-meta { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; font-size: 0.85rem; }
+.detected-content-meta time { color: #777; font-size: 0.78rem; white-space: nowrap; }
+.detected-content-notice { margin: 0.75rem 0 0; padding: 0.65rem; border-radius: 6px; background: #fff6d8; color: #5b4600; }
 .embed-modal .embed-options { margin: 1rem 0; display: flex; flex-direction: column; gap: 0.5rem; }
 .embed-option { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; }
 .embed-recipients { margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid #ddd; }
@@ -914,6 +922,9 @@ textarea { resize: vertical; min-height: 60px; }
   .conversation-item, .thread-wrap, .modal, .event, .reply-box, .search-bar-wrap { background: #2a2a2a; border-color: #444; }
   .profile-banner-placeholder { background: #333; }
   .note-thread.focused { outline-color: #eee; }
+  .note-thread.detected { outline-color: #b7a7ff; background: rgba(183, 167, 255, 0.12); }
+  .detected-content-item { background: #242424; border-color: #555; }
+  .detected-content-notice { background: #4a3e15; color: #fff0ae; }
   .profile-stats strong { color: #eee; }
   .main-content { background: #1a1a1a; }
   .side-nav button:hover { background: #333; }

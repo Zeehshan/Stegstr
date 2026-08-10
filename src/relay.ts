@@ -191,8 +191,8 @@ export class RelayManager {
     this.now = options.now ?? Date.now;
     this.onlineTarget = options.onlineTarget === undefined ? (typeof window === "undefined" ? null : window) : options.onlineTarget;
     this.isOnline = options.isOnline ?? (() => typeof navigator === "undefined" || navigator.onLine !== false);
-    this.setTimer = options.setTimer ?? setTimeout;
-    this.clearTimer = options.clearTimer ?? clearTimeout;
+    this.setTimer = options.setTimer ?? ((callback, delay) => globalThis.setTimeout(callback, delay));
+    this.clearTimer = options.clearTimer ?? ((timer) => globalThis.clearTimeout(timer));
 
     const urls = [...new Set(relayUrls.map(normalizeRelayUrl).filter((url): url is string => url !== null))];
     for (const url of urls) this.nodes.set(url, this.newNode(url));
