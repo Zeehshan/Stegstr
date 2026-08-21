@@ -39,13 +39,15 @@ Embed:
   --payload <string>     Payload as UTF-8 string (bundle JSON for full feed)
   --payload @<path>      Payload from file (e.g. --payload @bundle.json)
   --payload-base64 <b64> Payload as base64 string
-  --encrypt              Encrypt with app key before embedding (any Stegstr user can detect)
-  --mode robust-v2       Use the experimental Rust differential-QIM format (default remains legacy)
+  --encrypt              Encrypt with app key before embedding (any Stegstr user can detect).
+                          Supported for both --mode legacy and --mode robust-v2, and uses the
+                          same STEGSTR1 AES-GCM format the desktop app already produces, so
+                          encrypted images are interchangeable between CLI and app.
+  --mode robust-v2       Use the Rust differential-QIM format that survives resize/recompression
+                          (recommended default for content that will be shared through platforms
+                          like WhatsApp/Telegram/Instagram; legacy remains the PNG-lossless option)
   --robustness <profile> standard, robust (default), or maximum; robust-v2 only
-  -o, --output <path>    Output PNG path (required for embed)
-
-Robust-v2 currently rejects --encrypt instead of compressing ciphertext in the
-wrong order. Legacy --encrypt behavior is unchanged.
+  -o, --output <path>    Output PNG (legacy) or JPEG (robust-v2) path (required for embed)
 
 Post:
   Creates a kind 1 Nostr note with Stegstr suffix. Outputs bundle JSON to stdout or --output file.
@@ -280,13 +282,10 @@ fn run_decode(args: &[String]) -> Result<(), String> {
     }
     let path_str = image_path.ok_or("decode requires <image.png>")?;
     let path = Path::new(path_str);
-    let (payload, is_v2) = match stegstr_lib::stego_v2::decode(path) {
-        Ok(result) => (result.payload, true),
-        Err(_) => (stegstr_lib::stego::decode(path)?, false),
+    let payload = match stegstr_lib::stego_v2::decode(path) {
+        Ok(result) => result.payload,
+        Err(_) => stegstr_lib::stego::decode(path)?,
     };
-    if decrypt && is_v2 {
-        return Err("robust-v2 encrypted payloads are not enabled yet".to_string());
-    }
     let output = if decrypt && stegstr_lib::stego_crypto::is_encrypted_payload(&payload) {
         stegstr_lib::stego_crypto::decrypt_app(&payload)?
     } else if decrypt {
@@ -388,12 +387,6 @@ fn run_embed(args: &[String]) -> Result<(), String> {
         );
     };
 
-    if encrypt && mode == "robust-v2" {
-        return Err(
-            "robust-v2 --encrypt is not enabled until compression-before-encryption is wired"
-                .to_string(),
-        );
-    }
     if encrypt {
         let plaintext = String::from_utf8(payload_bytes).map_err(|e| e.to_string())?;
         payload_bytes = stegstr_lib::stego_crypto::encrypt_app(&plaintext)?;
