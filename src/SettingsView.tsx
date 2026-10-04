@@ -1,5 +1,7 @@
 import * as Nostr from "./nostr-stub";
 import type { IdentityEntry, ProfileData } from "./types";
+import { normalizeRelayUrl } from "./relay";
+import { identityPublicKey } from "./identity-crypto";
 
 export interface SettingsViewProps {
   identities: IdentityEntry[];
@@ -25,8 +27,8 @@ export function SettingsView({
 }: SettingsViewProps) {
   const handleAddRelay = () => {
     if (newRelayUrl.trim()) {
-      const url = newRelayUrl.trim().toLowerCase();
-      if (url.startsWith("wss://") || url.startsWith("ws://")) {
+      const url = normalizeRelayUrl(newRelayUrl);
+      if (url) {
         if (relayUrls.includes(url)) {
           onStatus("Relay already added.");
         } else {
@@ -35,7 +37,7 @@ export function SettingsView({
         }
         setNewRelayUrl("");
       } else {
-        onStatus("Relay URL must start with wss:// or ws://");
+        onStatus("Enter a valid ws:// or wss:// relay URL without credentials.");
       }
     }
   };
@@ -61,7 +63,7 @@ export function SettingsView({
       <p className="muted">Public keys (npub). Click to copy.</p>
       <ul className="settings-list">
         {identities.map((id) => {
-          const pk = Nostr.getPublicKey(Nostr.hexToBytes(id.privKeyHex));
+          const pk = identityPublicKey(id);
           const label = profiles[pk]?.name || id.label || pk.slice(0, 8) + "…";
           return (
             <li key={id.id} className="settings-list-item settings-identity-item">

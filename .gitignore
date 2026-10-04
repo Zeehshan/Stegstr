@@ -29,3 +29,6 @@ dist-ssr
 # Website and browser app — hosted separately, not part of this repo
 website/
 stegstr-website.zip
+
+# Reproducible benchmark scratch files (reports are intentionally tracked)
+benchmarks/work/

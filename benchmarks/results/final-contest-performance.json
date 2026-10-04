@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-09T13:04:24.871Z",
+  "measurement": "release bridge wall-clock after warm-up; process startup included",
+  "measurements": [
+    {
+      "carrier": "normal-photo",
+      "width": 1280,
+      "height": 720,
+      "payload_size_bytes": 128,
+      "repeats": 5,
+      "encode": {
+        "average_ms": 59.25091659999989,
+        "median_ms": 59.568457999999964,
+        "minimum_ms": 57.62866599999984,
+        "maximum_ms": 59.91429199999993
+      },
+      "decode": {
+        "average_ms": 29.899883000000045,
+        "median_ms": 30.06183299999998,
+        "minimum_ms": 29.105458,
+        "maximum_ms": 30.243208000000095
+      },
+      "total_average_ms": 89.15079959999994
+    },
+    {
+      "carrier": "detailed-photo",
+      "width": 1920,
+      "height": 1080,
+      "payload_size_bytes": 128,
+      "repeats": 5,
+      "encode": {
+        "average_ms": 116.68563320000003,
+        "median_ms": 117.16462500000011,
+        "minimum_ms": 111.93445799999972,
+        "maximum_ms": 123.18670799999995
+      },
+      "decode": {
+        "average_ms": 45.47314980000006,
+        "median_ms": 45.45029100000011,
+        "minimum_ms": 44.941249999999854,
+        "maximum_ms": 46.44229100000007
+      },
+      "total_average_ms": 162.15878300000008
+    },
+    {
+      "carrier": "gradient",
+      "width": 2048,
+      "height": 2048,
+      "payload_size_bytes": 128,
+      "repeats": 5,
+      "encode": {
+        "average_ms": 201.88695820000004,
+        "median_ms": 201.884458,
+        "minimum_ms": 196.92033300000003,
+        "maximum_ms": 209.8715000000002
+      },
+      "decode": {
+        "average_ms": 85.01086680000007,
+        "median_ms": 78.90420799999993,
+        "minimum_ms": 76.17608400000017,
+        "maximum_ms": 111.27687500000002
+      },
+      "total_average_ms": 286.8978250000001
+    }
+  ]
+}

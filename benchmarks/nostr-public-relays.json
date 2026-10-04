@@ -1,0 +1,11 @@
+{
+  "relays": [
+    "wss://relay.damus.io",
+    "wss://nos.lol",
+    "wss://relay.nostr.band"
+  ],
+  "unavailableRelays": [
+    "ws://203.0.113.1:81",
+    "ws://198.51.100.1:81"
+  ]
+}

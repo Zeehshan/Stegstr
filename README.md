@@ -33,9 +33,13 @@ Binary: `target/release/stegstr-cli` (Windows: `stegstr-cli.exe`). Example:
 
 ```bash
 ./target/release/stegstr-cli post "Hello from CLI" --output bundle.json
-./target/release/stegstr-cli embed cover.png -o out.png --payload @bundle.json --encrypt
-./target/release/stegstr-cli detect out.png
+./target/release/stegstr-cli embed cover.png -o out.jpg --payload @bundle.json --mode robust-v2 --encrypt
+./target/release/stegstr-cli detect out.jpg
 ```
+
+Use `--mode robust-v2` for anything that will be shared through a platform that recompresses or
+resizes images (WhatsApp, Telegram, Instagram, and similar); omit it for a lossless PNG that will
+only be transferred byte-for-byte.
 
 ## Build from source (full app)
 

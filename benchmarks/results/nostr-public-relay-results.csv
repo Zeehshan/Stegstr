@@ -1,0 +1,4 @@
+relay,connection_success,connect_time_ms,disconnects,reconnect_success,subscription_restore,publish_ack,publish_latency_ms,receive_success,duplicate_suppressed,outbox_flush_success,errors
+wss://relay.damus.io,true,830,1,true,true,accepted,391,true,true,false,"Received network error or non-101 status code."
+wss://nos.lol,true,505,1,true,true,accepted,193,true,true,true,""
+wss://relay.nostr.band,false,,0,false,false,pending,,false,false,false,"connection timeout | Received network error or non-101 status code."

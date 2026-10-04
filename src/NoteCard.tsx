@@ -279,6 +279,8 @@ export interface NoteThreadProps {
   repostEvent?: NostrEvent;
   /** If true, add "focused" class. */
   isFocused?: boolean;
+  /** If true, temporarily highlight content selected from image detection. */
+  isDetected?: boolean;
   /** Extra text in note-meta. */
   metaSuffix?: React.ReactNode;
   /** Max replies to show. 0 = all. */
@@ -300,6 +302,7 @@ export function NoteThread({
   replies,
   repostEvent,
   isFocused,
+  isDetected,
   metaSuffix,
   maxReplies = 0,
   showReplyActions = false,
@@ -311,7 +314,10 @@ export function NoteThread({
 }: NoteThreadProps) {
   const { profiles } = state;
   return (
-    <li className={`note-thread${isFocused ? " focused" : ""}`}>
+    <li
+      className={`note-thread${isFocused ? " focused" : ""}${isDetected ? " detected" : ""}`}
+      tabIndex={isDetected ? -1 : undefined}
+    >
       {repostEvent && (
         <p className="repost-label muted">
           <button type="button" className="link-like" onClick={() => actions.onNavigateProfile?.(repostEvent.pubkey)}>

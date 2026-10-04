@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "started_at": "2026-08-09T12:13:04.194Z",
+  "finished_at": "2026-08-09T12:33:29.037Z",
+  "duration_minutes_requested": 20,
+  "duration_minutes_observed": 20.41,
+  "identity": {
+    "disposable": true,
+    "public_key": "1875aa21844fa9c369e5fd0d21afc6e75be8bed355b1b460584b7d969e43fb79",
+    "private_key_recorded": false
+  },
+  "published_event_count": 2,
+  "first_event_id": "ef2565617161faccaca6cd86813400462db5523a3ac5a9d2d96ed2cfbbd4bd07",
+  "offline_outbox_event_id": "e7991d21a08913a5396a9e6f40f6e2a57f9e3c15f905a45d9c47db834103723e",
+  "first_publish_overall": "accepted",
+  "first_event_receive_count_after_shared_dedup": 1,
+  "relays_confirming_first_event": 2,
+  "follow_up_receive_probe": {
+    "performed_at": "2026-08-09T12:35:00Z",
+    "wss://relay.damus.io": true,
+    "wss://nos.lol": true,
+    "wss://relay.nostr.band": false
+  },
+  "offline_outbox": {
+    "persisted_before_restart": true,
+    "accepted_after_restart": true,
+    "removed_after_acceptance": true
+  },
+  "failure_scenarios": [
+    {
+      "label": "one relay unavailable",
+      "connected": 1,
+      "configured": 3,
+      "sync_state": "syncing",
+      "errors": [
+        "WebSocket error"
+      ]
+    },
+    {
+      "label": "two relays unavailable",
+      "connected": 0,
+      "configured": 3,
+      "sync_state": "syncing",
+      "errors": [
+        "WebSocket error"
+      ]
+    }
+  ],
+  "soak": {
+    "samples": 240,
+    "min_connected": 2,
+    "max_connected": 2,
+    "max_retry_attempt": 36,
+    "final_snapshot": {
+      "relays": [
+        {
+          "url": "wss://relay.damus.io",
+          "state": "Subscribed",
+          "initialEose": true,
+          "retryAttempt": 0,
+          "lastError": "Received network error or non-101 status code."
+        },
+        {
+          "url": "wss://nos.lol",
+          "state": "Subscribed",
+          "initialEose": true,
+          "retryAttempt": 0
+        },
+        {
+          "url": "wss://relay.nostr.band",
+          "state": "Connecting",
+          "initialEose": false,
+          "retryAttempt": 36,
+          "lastError": "Received network error or non-101 status code."
+        }
+      ],
+      "connected": 2,
+      "configured": 3,
+      "completedInitialSync": 2,
+      "syncState": "partial",
+      "pendingPublishes": 0,
+      "failedPublishes": 0
+    }
+  },
+  "relays": [
+    {
+      "relay": "wss://relay.damus.io",
+      "connection_success": true,
+      "connect_time_ms": 830,
+      "disconnects": 1,
+      "reconnect_success": true,
+      "subscription_restore": true,
+      "publish_ack": "accepted",
+      "publish_latency_ms": 391,
+      "receive_success": true,
+      "duplicate_suppressed": true,
+      "outbox_flush_success": false,
+      "errors": [
+        "Received network error or non-101 status code."
+      ]
+    },
+    {
+      "relay": "wss://nos.lol",
+      "connection_success": true,
+      "connect_time_ms": 505,
+      "disconnects": 1,
+      "reconnect_success": true,
+      "subscription_restore": true,
+      "publish_ack": "accepted",
+      "publish_latency_ms": 193,
+      "receive_success": true,
+      "duplicate_suppressed": true,
+      "outbox_flush_success": true,
+      "errors": []
+    },
+    {
+      "relay": "wss://relay.nostr.band",
+      "connection_success": false,
+      "connect_time_ms": null,
+      "disconnects": 0,
+      "reconnect_success": false,
+      "subscription_restore": false,
+      "publish_ack": "pending",
+      "publish_latency_ms": null,
+      "receive_success": false,
+      "duplicate_suppressed": false,
+      "outbox_flush_success": false,
+      "errors": [
+        "connection timeout",
+        "Received network error or non-101 status code."
+      ]
+    }
+  ],
+  "errors": [
+    "WebSocket error"
+  ],
+  "sleep_wake": {
+    "automated": false,
+    "reason": "Automated system sleep is unsafe for an unattended test run; manual steps are documented in the Markdown report."
+  }
+}

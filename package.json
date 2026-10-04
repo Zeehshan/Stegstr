@@ -17,7 +17,13 @@
     "launch:both": "./scripts/launch-both-profiles.sh",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "node tests/e2e/run-permutations.mjs"
+    "test:e2e": "node tests/e2e/run-permutations.mjs",
+    "benchmark:stego": "node benchmarks/run.mjs",
+    "benchmark:real-world:generate": "node benchmarks/real-world/generate-kit.mjs",
+    "benchmark:real-world:local": "node benchmarks/real-world/run-local-validation.mjs",
+    "benchmark:real-world:performance": "node benchmarks/real-world/profile-performance.mjs",
+    "benchmark:final-performance": "node benchmarks/final-candidate-performance.mjs",
+    "soak:nostr-public": "node benchmarks/nostr-public-relay-soak.mjs --duration-minutes=20"
   },
   "dependencies": {
     "@noble/hashes": "^2.0.1",
@@ -39,6 +45,7 @@
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
     "jsdom": "^28.1.0",
+    "sharp": "^0.35.3",
     "typescript": "~5.8.3",
     "vite": "^7.0.4",
     "vitest": "^4.0.18"
